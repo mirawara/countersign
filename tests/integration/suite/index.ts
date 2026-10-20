@@ -55,13 +55,13 @@ function alive(pid: number): boolean {
 /** Reads the state the status command reports, which is the same string the user sees. */
 async function readState(recorder: Recorder): Promise<string> {
   const before = recorder.information.length;
-  await vscode.commands.executeCommand("aiDevOrchestrator.showStatus");
+  await vscode.commands.executeCommand("countersign.showStatus");
   const message = recorder.information[before] ?? "";
   return (/State: ([a-z_]+)/.exec(message)?.[1]) ?? "unknown";
 }
 
 async function startAndWait(recorder: Recorder): Promise<string> {
-  await vscode.commands.executeCommand("aiDevOrchestrator.startWorkflow");
+  await vscode.commands.executeCommand("countersign.startWorkflow");
   return readState(recorder);
 }
 
@@ -78,14 +78,14 @@ function assertChannelIsClean(recorder: Recorder): void {
 }
 
 const CONTRIBUTED_COMMANDS = [
-  "aiDevOrchestrator.startWorkflow",
-  "aiDevOrchestrator.cancelWorkflow",
-  "aiDevOrchestrator.showStatus",
-  "aiDevOrchestrator.showDiagnostics",
-  "aiDevOrchestrator.verifyClaudeGate",
-  "aiDevOrchestrator.showDiff",
-  "aiDevOrchestrator.showReview",
-  "aiDevOrchestrator.showCheckResults",
+  "countersign.startWorkflow",
+  "countersign.cancelWorkflow",
+  "countersign.showStatus",
+  "countersign.showDiagnostics",
+  "countersign.verifyClaudeGate",
+  "countersign.showDiff",
+  "countersign.showReview",
+  "countersign.showCheckResults",
 ];
 
 /**
@@ -94,8 +94,8 @@ const CONTRIBUTED_COMMANDS = [
  * inferred from a command that happens to work.
  */
 async function assertExtensionActivates(): Promise<void> {
-  const extension = vscode.extensions.getExtension("local.ai-dev-orchestrator");
-  assert(extension !== undefined, "The ai-dev-orchestrator extension was not discovered.");
+  const extension = vscode.extensions.getExtension("local.countersign");
+  assert(extension !== undefined, "The countersign extension was not discovered.");
   assert(!extension.isActive, "The extension must stay inactive until a command needs it.");
   await extension.activate();
   assert(extension.isActive, "The extension did not activate.");
@@ -128,9 +128,9 @@ async function mockClean(): Promise<CaseReport> {
 
     // Result commands must surface the detail the channel withholds.
     const documentsBefore = recorder.documents.length;
-    await vscode.commands.executeCommand("aiDevOrchestrator.showDiff");
-    await vscode.commands.executeCommand("aiDevOrchestrator.showCheckResults");
-    await vscode.commands.executeCommand("aiDevOrchestrator.showReview");
+    await vscode.commands.executeCommand("countersign.showDiff");
+    await vscode.commands.executeCommand("countersign.showCheckResults");
+    await vscode.commands.executeCommand("countersign.showReview");
     const [diffDocument, checkDocument, reviewDocument] = recorder.documents.slice(documentsBefore);
     assert(diffDocument !== undefined, "Show Workflow Diff opened no document.");
     assertIncludes(diffDocument.content, DIFF_FRAGMENT, "Diff document");
@@ -140,9 +140,9 @@ async function mockClean(): Promise<CaseReport> {
     assert(reviewDocument !== undefined, "Show Review Details opened no document.");
     assertIncludes(reviewDocument.content, "Review summary:", "Review document");
 
-    await vscode.commands.executeCommand("aiDevOrchestrator.showDiagnostics");
+    await vscode.commands.executeCommand("countersign.showDiagnostics");
     const diagnostics = channelText(recorder);
-    assertIncludes(diagnostics, "AI Dev Orchestrator diagnostics", "Diagnostics");
+    assertIncludes(diagnostics, "Countersign diagnostics", "Diagnostics");
     assertIncludes(diagnostics, "Workspace trusted: yes", "Diagnostics");
 
     const dirty = statusPorcelain(repository);
@@ -178,7 +178,7 @@ async function mockDismiss(): Promise<CaseReport> {
     assert(state === "cancelled", `Dismissing the confirmation must cancel, got ${state}.`);
     assert(recorder.modals.length === 1, "The confirmation modal must still be shown before cancelling.");
     const text = channelText(recorder);
-    assertExcludes(text, "--- AI Dev Orchestrator workflow ---", "A dismissed confirmation must not start the workflow");
+    assertExcludes(text, "--- Countersign workflow ---", "A dismissed confirmation must not start the workflow");
     return { state, modalShown: recorder.modals.length };
   } finally {
     recorder.restore();
@@ -203,7 +203,7 @@ async function mockValidationFailed(): Promise<CaseReport> {
 async function cancelDuringCheck(): Promise<CaseReport> {
   const recorder = installRecorder({ task: "Cancel while a local check is running", confirm: true });
   try {
-    const running = vscode.commands.executeCommand("aiDevOrchestrator.startWorkflow");
+    const running = vscode.commands.executeCommand("countersign.startWorkflow");
     await waitFor(
       () => countOccurrences(recorder.outputLines, "running_checks:") > 0,
       60_000,
@@ -215,7 +215,7 @@ async function cancelDuringCheck(): Promise<CaseReport> {
     assert(checkPids.length > 0, "No check process was observed before cancelling.");
     assert(childPids.length > 0, "The check spawned no child process to terminate.");
 
-    await vscode.commands.executeCommand("aiDevOrchestrator.cancelWorkflow");
+    await vscode.commands.executeCommand("countersign.cancelWorkflow");
     await running;
 
     const state = await readState(recorder);
@@ -248,9 +248,9 @@ async function realWorkflow(): Promise<CaseReport> {
     const status = statusPorcelain(repository);
 
     const documentsBefore = recorder.documents.length;
-    await vscode.commands.executeCommand("aiDevOrchestrator.showDiff");
-    await vscode.commands.executeCommand("aiDevOrchestrator.showCheckResults");
-    await vscode.commands.executeCommand("aiDevOrchestrator.showReview");
+    await vscode.commands.executeCommand("countersign.showDiff");
+    await vscode.commands.executeCommand("countersign.showCheckResults");
+    await vscode.commands.executeCommand("countersign.showReview");
     const [diffDocument, checkDocument, reviewDocument] = recorder.documents.slice(documentsBefore);
 
     assertChannelIsClean(recorder);

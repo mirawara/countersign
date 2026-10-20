@@ -43,13 +43,13 @@ describe("VS Code command entry", () => {
   it("locks a workflow before the first async preflight so a second start is rejected", async () => {
     repository = await createCleanGitRepository();
     activate({ subscriptions: [] } as unknown as vscode.ExtensionContext);
-    const start = callbacks.get("aiDevOrchestrator.startWorkflow");
+    const start = callbacks.get("countersign.startWorkflow");
     expect(start).toBeDefined();
     const first = Promise.resolve(start?.());
     await Promise.resolve(start?.());
     expect(information).toContain("A workflow is already running.");
     // The first command may still be in Git preflight; abort it before the input box opens.
-    await Promise.resolve(callbacks.get("aiDevOrchestrator.cancelWorkflow")?.());
+    await Promise.resolve(callbacks.get("countersign.cancelWorkflow")?.());
     resolveInput?.(undefined);
     await first;
   });

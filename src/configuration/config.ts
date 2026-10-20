@@ -28,34 +28,34 @@ type RawConfiguration = Partial<Record<keyof OrchestratorConfig, unknown>>;
 export function validateConfiguration(raw: RawConfiguration): OrchestratorConfig {
   const provider = raw.provider ?? "mock";
   if (provider !== "mock" && provider !== "claude") {
-    throw new Error("aiDevOrchestrator.provider must be 'mock' or 'claude'.");
+    throw new Error("countersign.provider must be 'mock' or 'claude'.");
   }
 
   const codexProvider = raw.codexProvider ?? "mock";
   if (codexProvider !== "mock" && codexProvider !== "real") {
-    throw new Error("aiDevOrchestrator.codexProvider must be 'mock' or 'real'.");
+    throw new Error("countersign.codexProvider must be 'mock' or 'real'.");
   }
   if (provider === "claude" && codexProvider !== "real") {
     throw new Error("The real Claude implementation requires a real Codex review provider.");
   }
   const codexExecutable = raw.codexExecutable ?? "codex";
   if (typeof codexExecutable !== "string" || codexExecutable.trim().length === 0 || codexExecutable.includes("\0")) {
-    throw new Error("aiDevOrchestrator.codexExecutable must be a non-empty executable name or path.");
+    throw new Error("countersign.codexExecutable must be a non-empty executable name or path.");
   }
 
   const claudeExecutable = raw.claudeExecutable ?? "claude";
   if (typeof claudeExecutable !== "string" || claudeExecutable.trim().length === 0 || claudeExecutable.includes("\0")) {
-    throw new Error("aiDevOrchestrator.claudeExecutable must be a non-empty executable name or path.");
+    throw new Error("countersign.claudeExecutable must be a non-empty executable name or path.");
   }
 
   const scenario = raw.mockScenario ?? "clean";
   if (scenario !== "clean" && scenario !== "finding" && scenario !== "noChanges" && scenario !== "error") {
-    throw new Error("aiDevOrchestrator.mockScenario has an unsupported value.");
+    throw new Error("countersign.mockScenario has an unsupported value.");
   }
 
   const rawTools = raw.claudeAllowedTools ?? [...DEFAULT_CLAUDE_TOOLS];
   if (!Array.isArray(rawTools) || !rawTools.every((tool) => typeof tool === "string")) {
-    throw new Error("aiDevOrchestrator.claudeAllowedTools must be an array of strings.");
+    throw new Error("countersign.claudeAllowedTools must be an array of strings.");
   }
   const tools = [...new Set(rawTools as string[])];
   if (tools.some((tool) => !ALLOWED_CLAUDE_TOOLS.has(tool))) {
@@ -64,7 +64,7 @@ export function validateConfiguration(raw: RawConfiguration): OrchestratorConfig
 
   const rawChecks = raw.localChecks ?? [];
   if (!Array.isArray(rawChecks)) {
-    throw new Error("aiDevOrchestrator.localChecks must be an array.");
+    throw new Error("countersign.localChecks must be an array.");
   }
   const localChecks = rawChecks.map(parseLocalCheck);
   const checkIds = new Set<string>();
@@ -77,7 +77,7 @@ export function validateConfiguration(raw: RawConfiguration): OrchestratorConfig
 
   const findingThreshold = raw.findingThreshold ?? "High";
   if (!isFindingSeverity(findingThreshold)) {
-    throw new Error("aiDevOrchestrator.findingThreshold must be Critical, High, Medium, Low, or Info.");
+    throw new Error("countersign.findingThreshold must be Critical, High, Medium, Low, or Info.");
   }
 
   return {

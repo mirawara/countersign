@@ -4,9 +4,28 @@ import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { ClaudeGateRecord } from "../shared/types";
 
-const RECORD_PATH = join(homedir(), ".ai-dev-orchestrator", "claude-gate.json");
+const RECORD_PATH = join(homedir(), ".countersign", "claude-gate.json");
+/** Where the record lived before the extension was renamed; read so a passed gate survives. */
+const LEGACY_RECORD_PATH = join(homedir(), ".ai-dev-orchestrator", "claude-gate.json");
 
-export async function loadClaudeGateRecord(path = RECORD_PATH): Promise<ClaudeGateRecord | undefined> {
+/**
+ * Resolves the pre-rename record to consult alongside `path`. It applies to the real record by
+ * default, and to an explicit path only when the caller names one, so tests never reach the
+ * record in the user's home directory.
+ */
+function legacyFor(path: string, legacyPath?: string): string | undefined {
+  if (legacyPath) return legacyPath;
+  return path === RECORD_PATH ? LEGACY_RECORD_PATH : undefined;
+}
+
+export async function loadClaudeGateRecord(path = RECORD_PATH, legacyPath?: string): Promise<ClaudeGateRecord | undefined> {
+  const record = await readRecord(path);
+  if (record) return record;
+  const legacy = legacyFor(path, legacyPath);
+  return legacy ? readRecord(legacy) : undefined;
+}
+
+async function readRecord(path: string): Promise<ClaudeGateRecord | undefined> {
   let text: string;
   try { text = await readFile(path, "utf8"); }
   catch (error) {
@@ -23,7 +42,7 @@ export async function loadClaudeGateRecord(path = RECORD_PATH): Promise<ClaudeGa
   return { passed: true, version: record.version, passedAt: record.passedAt };
 }
 
-export async function saveClaudeGateRecord(record: ClaudeGateRecord, path = RECORD_PATH): Promise<void> {
+export async function saveClaudeGateRecord(record: ClaudeGateRecord, path = RECORD_PATH, legacyPath?: string): Promise<void> {
   const directory = dirname(path);
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const temporary = join(directory, `claude-gate-${randomUUID()}.tmp`);
@@ -33,10 +52,16 @@ export async function saveClaudeGateRecord(record: ClaudeGateRecord, path = RECO
   } finally {
     await rm(temporary, { force: true });
   }
+  // Drop the pre-rename record so it can never shadow or outlive the current one.
+  const legacy = legacyFor(path, legacyPath);
+  if (legacy) await rm(legacy, { force: true });
 }
 
-export async function clearClaudeGateRecord(path = RECORD_PATH): Promise<void> {
+export async function clearClaudeGateRecord(path = RECORD_PATH, legacyPath?: string): Promise<void> {
   await rm(path, { force: true });
+  // A cleared gate must stay cleared, so the legacy fallback goes with it.
+  const legacy = legacyFor(path, legacyPath);
+  if (legacy) await rm(legacy, { force: true });
 }
 
 function isMissing(error: unknown): boolean {

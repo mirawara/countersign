@@ -125,7 +125,7 @@ export class CodexCliProvider implements AIProvider {
       throw new CodexProviderError("cancelled", "Codex review was cancelled.");
     }
 
-    const temporaryDirectory = await mkdtemp(join(tmpdir(), "ai-dev-orchestrator-codex-"));
+    const temporaryDirectory = await mkdtemp(join(tmpdir(), "countersign-codex-"));
     const schemaPath = join(temporaryDirectory, "review.schema.json");
     const messagePath = join(temporaryDirectory, "review.json");
     try {

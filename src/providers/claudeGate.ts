@@ -27,7 +27,7 @@ export async function verifyClaudeSettingsGate(
     throw new ClaudeGateError("Claude CLI does not declare every required isolation and output flag.");
   }
 
-  const directory = await mkdtemp(join(tmpdir(), "ai-dev-orchestrator-claude-gate-"));
+  const directory = await mkdtemp(join(tmpdir(), "countersign-claude-gate-"));
   const marker = join(directory, "hook-fired");
   try {
     const claudeDir = join(directory, ".claude");

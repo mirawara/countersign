@@ -11,7 +11,7 @@ import { MockProvider } from "./providers/mockProvider";
 import { WorkflowEvent, WorkflowResult, WorkflowState } from "./shared/types";
 
 class ExtensionRuntime {
-  private readonly output = vscode.window.createOutputChannel("AI Dev Orchestrator");
+  private readonly output = vscode.window.createOutputChannel("Countersign");
   private currentState: WorkflowState = "idle";
   private activeController: AbortController | undefined;
   private latestResult: WorkflowResult | undefined;
@@ -21,14 +21,14 @@ class ExtensionRuntime {
   register(): void {
     this.context.subscriptions.push(
       this.output,
-      vscode.commands.registerCommand("aiDevOrchestrator.startWorkflow", () => this.startWorkflow()),
-      vscode.commands.registerCommand("aiDevOrchestrator.cancelWorkflow", () => this.cancelWorkflow()),
-      vscode.commands.registerCommand("aiDevOrchestrator.showStatus", () => this.showStatus()),
-      vscode.commands.registerCommand("aiDevOrchestrator.showDiagnostics", () => this.showDiagnostics()),
-      vscode.commands.registerCommand("aiDevOrchestrator.verifyClaudeGate", () => this.verifyClaudeGate()),
-      vscode.commands.registerCommand("aiDevOrchestrator.showDiff", () => this.showDiff()),
-      vscode.commands.registerCommand("aiDevOrchestrator.showReview", () => this.showReview()),
-      vscode.commands.registerCommand("aiDevOrchestrator.showCheckResults", () => this.showCheckResults()),
+      vscode.commands.registerCommand("countersign.startWorkflow", () => this.startWorkflow()),
+      vscode.commands.registerCommand("countersign.cancelWorkflow", () => this.cancelWorkflow()),
+      vscode.commands.registerCommand("countersign.showStatus", () => this.showStatus()),
+      vscode.commands.registerCommand("countersign.showDiagnostics", () => this.showDiagnostics()),
+      vscode.commands.registerCommand("countersign.verifyClaudeGate", () => this.verifyClaudeGate()),
+      vscode.commands.registerCommand("countersign.showDiff", () => this.showDiff()),
+      vscode.commands.registerCommand("countersign.showReview", () => this.showReview()),
+      vscode.commands.registerCommand("countersign.showCheckResults", () => this.showCheckResults()),
     );
   }
 
@@ -110,7 +110,7 @@ class ExtensionRuntime {
       }
 
       const task = await vscode.window.showInputBox({
-        title: "AI Dev Orchestrator",
+        title: "Countersign",
         prompt: "Describe the development task",
         placeHolder: "What should change?",
         ignoreFocusOut: true,
@@ -205,7 +205,7 @@ class ExtensionRuntime {
       }
 
       this.output.show(true);
-      this.output.appendLine("--- AI Dev Orchestrator workflow ---");
+      this.output.appendLine("--- Countersign workflow ---");
       this.output.appendLine(`Repository: ${repository}`);
       this.output.appendLine(`Mode: ${config.provider} implementation + ${config.codexProvider} review.`);
 
@@ -232,7 +232,7 @@ class ExtensionRuntime {
         this.currentState = result.state;
         this.latestResult = result;
         this.writeSummary(result);
-        void vscode.window.showInformationMessage(`AI Dev Orchestrator: ${result.state}. Open the output or result commands for details.`);
+        void vscode.window.showInformationMessage(`Countersign: ${result.state}. Open the output or result commands for details.`);
       } catch (error) {
         this.currentState = "failed";
         this.output.appendLine(`Workflow failed: ${errorMessage(error)}`);
@@ -263,9 +263,9 @@ class ExtensionRuntime {
   }
 
   private async showDiagnostics(): Promise<void> {
-    const config = vscode.workspace.getConfiguration("aiDevOrchestrator");
+    const config = vscode.workspace.getConfiguration("countersign");
     const lines = [
-      "AI Dev Orchestrator diagnostics",
+      "Countersign diagnostics",
       `VS Code: ${vscode.version}`,
       `Extension host Node.js: ${process.versions.node}`,
       `Workspace trusted: ${vscode.workspace.isTrusted ? "yes" : "no"}`,
@@ -366,7 +366,7 @@ class ExtensionRuntime {
 }
 
 function readConfiguration(): Record<string, unknown> {
-  const config = vscode.workspace.getConfiguration("aiDevOrchestrator");
+  const config = vscode.workspace.getConfiguration("countersign");
   return {
     provider: config.get<unknown>("provider", "mock"),
     claudeExecutable: config.get<unknown>("claudeExecutable", "claude"),

@@ -35,7 +35,7 @@ describe("Git preflight", () => {
   });
 
   it("identifies a folder outside Git", async () => {
-    const folder = await mkdtemp(join(tmpdir(), "ai-dev-orchestrator-not-git-"));
+    const folder = await mkdtemp(join(tmpdir(), "countersign-not-git-"));
     repositories.push(folder);
     try {
       await preflightGit(folder);

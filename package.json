@@ -1,6 +1,6 @@
 {
-  "name": "ai-dev-orchestrator",
-  "displayName": "AI Dev Orchestrator",
+  "name": "countersign",
+  "displayName": "Countersign",
   "description": "A local VS Code workflow for bounded Claude implementation and Codex review, with mock mode.",
   "version": "0.1.0",
   "publisher": "local",
@@ -11,55 +11,55 @@
     "Other"
   ],
   "activationEvents": [
-    "onCommand:aiDevOrchestrator.startWorkflow",
-    "onCommand:aiDevOrchestrator.cancelWorkflow",
-    "onCommand:aiDevOrchestrator.showStatus",
-    "onCommand:aiDevOrchestrator.showDiagnostics",
-    "onCommand:aiDevOrchestrator.verifyClaudeGate",
-    "onCommand:aiDevOrchestrator.showDiff",
-    "onCommand:aiDevOrchestrator.showReview",
-    "onCommand:aiDevOrchestrator.showCheckResults"
+    "onCommand:countersign.startWorkflow",
+    "onCommand:countersign.cancelWorkflow",
+    "onCommand:countersign.showStatus",
+    "onCommand:countersign.showDiagnostics",
+    "onCommand:countersign.verifyClaudeGate",
+    "onCommand:countersign.showDiff",
+    "onCommand:countersign.showReview",
+    "onCommand:countersign.showCheckResults"
   ],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
       {
-        "command": "aiDevOrchestrator.startWorkflow",
-        "title": "AI Dev Orchestrator: Start Workflow"
+        "command": "countersign.startWorkflow",
+        "title": "Countersign: Start Workflow"
       },
       {
-        "command": "aiDevOrchestrator.cancelWorkflow",
-        "title": "AI Dev Orchestrator: Cancel Workflow"
+        "command": "countersign.cancelWorkflow",
+        "title": "Countersign: Cancel Workflow"
       },
       {
-        "command": "aiDevOrchestrator.showStatus",
-        "title": "AI Dev Orchestrator: Show Workflow Status"
+        "command": "countersign.showStatus",
+        "title": "Countersign: Show Workflow Status"
       },
       {
-        "command": "aiDevOrchestrator.showDiagnostics",
-        "title": "AI Dev Orchestrator: Show Diagnostics"
+        "command": "countersign.showDiagnostics",
+        "title": "Countersign: Show Diagnostics"
       },
       {
-        "command": "aiDevOrchestrator.verifyClaudeGate",
-        "title": "AI Dev Orchestrator: Verify Claude Settings Isolation"
+        "command": "countersign.verifyClaudeGate",
+        "title": "Countersign: Verify Claude Settings Isolation"
       },
       {
-        "command": "aiDevOrchestrator.showDiff",
-        "title": "AI Dev Orchestrator: Show Workflow Diff"
+        "command": "countersign.showDiff",
+        "title": "Countersign: Show Workflow Diff"
       },
       {
-        "command": "aiDevOrchestrator.showReview",
-        "title": "AI Dev Orchestrator: Show Review Details"
+        "command": "countersign.showReview",
+        "title": "Countersign: Show Review Details"
       },
       {
-        "command": "aiDevOrchestrator.showCheckResults",
-        "title": "AI Dev Orchestrator: Show Check Results"
+        "command": "countersign.showCheckResults",
+        "title": "Countersign: Show Check Results"
       }
     ],
     "configuration": {
-      "title": "AI Dev Orchestrator",
+      "title": "Countersign",
       "properties": {
-        "aiDevOrchestrator.provider": {
+        "countersign.provider": {
           "type": "string",
           "enum": [
             "mock",
@@ -68,7 +68,7 @@
           "default": "mock",
           "description": "Implementation provider. Real Claude requires a successful settings-source isolation test for its exact CLI version."
         },
-        "aiDevOrchestrator.codexProvider": {
+        "countersign.codexProvider": {
           "type": "string",
           "enum": [
             "mock",
@@ -77,17 +77,17 @@
           "default": "mock",
           "description": "Review provider. The real Codex CLI uses exec with the read-only sandbox and may consume account quota."
         },
-        "aiDevOrchestrator.claudeExecutable": {
+        "countersign.claudeExecutable": {
           "type": "string",
           "default": "claude",
           "description": "Claude CLI executable name or path. Real execution requires an exact-version settings-source gate."
         },
-        "aiDevOrchestrator.codexExecutable": {
+        "countersign.codexExecutable": {
           "type": "string",
           "default": "codex",
           "description": "Codex CLI executable name or path."
         },
-        "aiDevOrchestrator.mockScenario": {
+        "countersign.mockScenario": {
           "type": "string",
           "enum": [
             "clean",
@@ -98,7 +98,7 @@
           "default": "clean",
           "description": "Mock-only scenario used by the workflow."
         },
-        "aiDevOrchestrator.claudeAllowedTools": {
+        "countersign.claudeAllowedTools": {
           "type": "array",
           "default": [
             "Read",
@@ -112,7 +112,7 @@
           },
           "description": "Explicit Claude tool allowlist shown before a task. Bash is not supported."
         },
-        "aiDevOrchestrator.localChecks": {
+        "countersign.localChecks": {
           "type": "array",
           "default": [],
           "items": {
@@ -140,31 +140,31 @@
           },
           "description": "Local checks explicitly configured as an executable and argument array. No shell is used."
         },
-        "aiDevOrchestrator.budgetGuardUsd": {
+        "countersign.budgetGuardUsd": {
           "type": "number",
           "default": 1,
           "minimum": 0.01,
           "description": "Claude CLI estimated cost guard per print invocation; it does not guarantee a billing cap."
         },
-        "aiDevOrchestrator.taskTimeoutMinutes": {
+        "countersign.taskTimeoutMinutes": {
           "type": "number",
           "default": 30,
           "minimum": 1,
           "maximum": 180
         },
-        "aiDevOrchestrator.providerTimeoutMinutes": {
+        "countersign.providerTimeoutMinutes": {
           "type": "number",
           "default": 15,
           "minimum": 1,
           "maximum": 60
         },
-        "aiDevOrchestrator.checkTimeoutMinutes": {
+        "countersign.checkTimeoutMinutes": {
           "type": "number",
           "default": 5,
           "minimum": 1,
           "maximum": 30
         },
-        "aiDevOrchestrator.findingThreshold": {
+        "countersign.findingThreshold": {
           "type": "string",
           "enum": [
             "Critical",
@@ -176,7 +176,7 @@
           "default": "High",
           "description": "Minimum finding severity eligible for Claude's single correction pass."
         },
-        "aiDevOrchestrator.terminationGracePeriodMs": {
+        "countersign.terminationGracePeriodMs": {
           "type": "number",
           "default": 1000,
           "minimum": 100,

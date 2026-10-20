@@ -9,7 +9,7 @@ afterEach(async () => { await Promise.all(folders.splice(0).map((folder) => rm(f
 
 describe("Claude gate record", () => {
   it("persists a strict version record with owner-only file permissions", async () => {
-    const folder = await mkdtemp(join(tmpdir(), "ai-dev-orchestrator-gate-store-test-"));
+    const folder = await mkdtemp(join(tmpdir(), "countersign-gate-store-test-"));
     folders.push(folder);
     const path = join(folder, "nested", "gate.json");
     const record = { passed: true as const, version: "2.1.109 (Claude Code)", passedAt: "2026-10-19T15:20:46.931Z" };
@@ -20,8 +20,33 @@ describe("Claude gate record", () => {
     expect(await loadClaudeGateRecord(path)).toBeUndefined();
   });
 
+  it("reads a record left at the pre-rename path, so a passed gate survives the rename", async () => {
+    const folder = await mkdtemp(join(tmpdir(), "countersign-gate-store-test-"));
+    folders.push(folder);
+    const path = join(folder, "countersign", "gate.json");
+    const legacyPath = join(folder, "legacy", "gate.json");
+    const record = { passed: true as const, version: "2.1.109 (Claude Code)", passedAt: "2026-10-19T15:20:46.931Z" };
+    await saveClaudeGateRecord(record, legacyPath);
+    expect(await loadClaudeGateRecord(path, legacyPath)).toEqual(record);
+
+    // Saving at the current path retires the legacy copy instead of leaving two records.
+    await saveClaudeGateRecord(record, path, legacyPath);
+    expect(await loadClaudeGateRecord(legacyPath)).toBeUndefined();
+  });
+
+  it("clears the pre-rename record too, so a cleared gate cannot come back", async () => {
+    const folder = await mkdtemp(join(tmpdir(), "countersign-gate-store-test-"));
+    folders.push(folder);
+    const path = join(folder, "countersign", "gate.json");
+    const legacyPath = join(folder, "legacy", "gate.json");
+    const record = { passed: true as const, version: "2.1.109 (Claude Code)", passedAt: "2026-10-19T15:20:46.931Z" };
+    await saveClaudeGateRecord(record, legacyPath);
+    await clearClaudeGateRecord(path, legacyPath);
+    expect(await loadClaudeGateRecord(path, legacyPath)).toBeUndefined();
+  });
+
   it("ignores malformed or unpassed records", async () => {
-    const folder = await mkdtemp(join(tmpdir(), "ai-dev-orchestrator-gate-store-test-"));
+    const folder = await mkdtemp(join(tmpdir(), "countersign-gate-store-test-"));
     folders.push(folder);
     const path = join(folder, "gate.json");
     await writeFile(path, '{"passed":false,"version":"2.1.109 (Claude Code)","passedAt":"now"}');

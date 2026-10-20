@@ -1,8 +1,8 @@
-# Guida utente — AI Dev Orchestrator
+# Guida utente — Countersign
 
 ## Che cosa si apre in VS Code
 
-L'estensione non apre una chat. Avvii un comando dalla Command Palette, scrivi un task in una casella di input e confermi l'esecuzione in una finestra modale. L'avanzamento appare nel pannello **Output → AI Dev Orchestrator**; altri comandi aprono il diff, la review e l'output dei controlli in documenti temporanei dell'editor.
+L'estensione non apre una chat. Avvii un comando dalla Command Palette, scrivi un task in una casella di input e confermi l'esecuzione in una finestra modale. L'avanzamento appare nel pannello **Output → Countersign**; altri comandi aprono il diff, la review e l'output dei controlli in documenti temporanei dell'editor.
 
 Ogni avvio è un workflow separato. Non ci sono conversazioni, messaggi successivi, allegati o un pannello laterale dedicato. L'estensione conserva in memoria solo il risultato più recente nella sessione corrente di VS Code. Le estensioni [Codex per IDE](https://learn.chatgpt.com/docs/codex/ide) e [Claude Code per VS Code](https://code.claude.com/docs/en/vs-code) offrono invece un'interazione conversazionale più ampia. Questo MVP serve a eseguire un percorso preciso: implementazione con Claude, controlli configurati, review con Codex ed eventuale singola correzione.
 
@@ -26,41 +26,41 @@ Non serve installare Node.js per eseguire il VSIX in modalità mock senza contro
 | `mock` | `real` | Codex rivede un diff simulato; consuma quota, ma non esamina una modifica reale. |
 | `claude` | `real` | Claude modifica il repository, vengono eseguiti i controlli configurati e Codex rivede il diff Git. |
 
-La combinazione `claude` + `mock` non è consentita. I valori delle modalità si impostano con `aiDevOrchestrator.provider` e `aiDevOrchestrator.codexProvider`.
+La combinazione `claude` + `mock` non è consentita. I valori delle modalità si impostano con `countersign.provider` e `countersign.codexProvider`.
 
 ## Installazione
 
-Se hai il file `.vsix`, in VS Code apri la Command Palette (`Ctrl+Shift+P` su Linux/Windows, `Cmd+Shift+P` su macOS), esegui **Extensions: Install from VSIX...** e seleziona il file. Ricarica la finestra se VS Code lo richiede. Cerca **AI Dev Orchestrator** nella lista delle estensioni installate.
+Se hai il file `.vsix`, in VS Code apri la Command Palette (`Ctrl+Shift+P` su Linux/Windows, `Cmd+Shift+P` su macOS), esegui **Extensions: Install from VSIX...** e seleziona il file. Ricarica la finestra se VS Code lo richiede. Cerca **Countersign** nella lista delle estensioni installate.
 
-Il VSIX non è incluso nel repository Git. Per provarla dai sorgenti, apri questa cartella in VS Code, esegui `npm ci`, poi avvia la configurazione **Run AI Dev Orchestrator** con `F5`. Nell'Extension Development Host apri il repository Git su cui vuoi fare la prova. Per build e test del progetto vedi il [README](README.md#development).
+Il VSIX non è incluso nel repository Git. Per provarla dai sorgenti, apri questa cartella in VS Code, esegui `npm ci`, poi avvia la configurazione **Run Countersign** con `F5`. Nell'Extension Development Host apri il repository Git su cui vuoi fare la prova. Per build e test del progetto vedi il [README](README.md#development).
 
 ## Prima prova senza richieste AI
 
 1. Apri in VS Code la radice di un piccolo repository Git di prova, diverso da quello dell'estensione, e concedi Workspace Trust.
 2. Controlla con `git status --short` che non ci siano modifiche. Se hai file da conservare, sistemali prima di avviare il workflow; l'estensione non li pulisce.
-3. Lascia le impostazioni predefinite: `aiDevOrchestrator.provider = mock` e `aiDevOrchestrator.codexProvider = mock`.
-4. Apri la Command Palette, cerca **AI Dev Orchestrator: Start Workflow**, inserisci un task e conferma dopo aver letto repository, task e controlli mostrati nella finestra modale.
-5. Apri **Output → AI Dev Orchestrator** e usa **Show Workflow Status**, **Show Workflow Diff**, **Show Review Details** e **Show Check Results** per vedere i dettagli.
+3. Lascia le impostazioni predefinite: `countersign.provider = mock` e `countersign.codexProvider = mock`.
+4. Apri la Command Palette, cerca **Countersign: Start Workflow**, inserisci un task e conferma dopo aver letto repository, task e controlli mostrati nella finestra modale.
+5. Apri **Output → Countersign** e usa **Show Workflow Status**, **Show Workflow Diff**, **Show Review Details** e **Show Check Results** per vedere i dettagli.
 
 Con i valori predefiniti, il diff è simulato in memoria: Claude e Codex non vengono chiamati e i provider mock non modificano i file. Se configuri controlli locali, questi sono processi reali e possono modificare il repository anche durante una prova mock; in quel caso il workflow segnala `validation_failed`.
 
 ## Attivare Claude e Codex reali
 
-1. Verifica nel terminale integrato che `claude --version` e `codex --version` funzionino. Se VS Code è stato avviato con un `PATH` diverso da quello del terminale, imposta i percorsi completi in `aiDevOrchestrator.claudeExecutable` e `aiDevOrchestrator.codexExecutable`.
+1. Verifica nel terminale integrato che `claude --version` e `codex --version` funzionino. Se VS Code è stato avviato con un `PATH` diverso da quello del terminale, imposta i percorsi completi in `countersign.claudeExecutable` e `countersign.codexExecutable`.
 2. Apri **Preferences: Open User Settings (JSON)** e imposta, per esempio:
 
    ```json
    {
-     "aiDevOrchestrator.provider": "claude",
-     "aiDevOrchestrator.codexProvider": "real",
-     "aiDevOrchestrator.localChecks": [
+     "countersign.provider": "claude",
+     "countersign.codexProvider": "real",
+     "countersign.localChecks": [
        { "id": "tests", "executable": "node", "args": ["--test"] }
      ]
    }
    ```
 
    Adatta `localChecks` ai comandi del tuo repository. L'estensione non scopre né avvia test da sola: con la lista vuota non esegue alcun controllo. I controlli usano eseguibile e argomenti separati, senza shell. Le impostazioni utente evitano di creare un nuovo `.vscode/settings.json` non tracciato nel repository da verificare.
-3. Esegui **AI Dev Orchestrator: Verify Claude Settings Isolation**. Dopo la tua conferma parte un test controllato con **due richieste reali a Claude**. Se passa, il risultato vale solo per la versione esatta della CLI Claude installata; dopo un aggiornamento devi ripeterlo. La verifica può consumare quota.
+3. Esegui **Countersign: Verify Claude Settings Isolation**. Dopo la tua conferma parte un test controllato con **due richieste reali a Claude**. Se passa, il risultato vale solo per la versione esatta della CLI Claude installata; dopo un aggiornamento devi ripeterlo. La verifica può consumare quota.
 4. Assicurati che il repository sia pulito e avvia **Start Workflow**. La conferma mostra repository, task, tool concessi a Claude, controlli e provider. Accettala solo dopo aver verificato questi dati. Il run reale può consumare quota di entrambi gli account.
 5. Segui l'avanzamento nell'Output Channel. Al termine apri diff, review e risultati dei controlli; confronta anche `git diff` e `git status` prima di conservare le modifiche. L'estensione non fa commit, stage, reset o pulizia del repository.
 
@@ -74,7 +74,7 @@ In modalità reale Claude può usare solo `Read`, `Glob`, `Grep`, `Edit` e `Writ
 
 ## Comandi disponibili
 
-Aprili dalla Command Palette cercando **AI Dev Orchestrator**.
+Aprili dalla Command Palette cercando **Countersign**.
 
 | Comando | Uso |
 | --- | --- |

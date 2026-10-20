@@ -56,7 +56,7 @@ describe("runExecutable", () => {
   });
 
   it.skipIf(process.platform === "win32")("kills a TERM-resistant descendant after its parent exits", async () => {
-    const folder = await mkdtemp(join(tmpdir(), "ai-dev-orchestrator-process-test-"));
+    const folder = await mkdtemp(join(tmpdir(), "countersign-process-test-"));
     const marker = join(folder, "descendant-survived");
     try {
       const descendant = `process.on('SIGTERM',()=>{});setTimeout(()=>{require('node:fs').writeFileSync(${JSON.stringify(marker)},'survived');process.exit(0)},700)`;

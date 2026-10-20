@@ -18,9 +18,9 @@ interface IntegrationCase {
 }
 
 const MOCK_BASE = {
-  "aiDevOrchestrator.provider": "mock",
-  "aiDevOrchestrator.codexProvider": "mock",
-  "aiDevOrchestrator.findingThreshold": "High",
+  "countersign.provider": "mock",
+  "countersign.codexProvider": "mock",
+  "countersign.findingThreshold": "High",
 };
 
 const CASES: IntegrationCase[] = [
@@ -30,8 +30,8 @@ const CASES: IntegrationCase[] = [
     timeoutMs: 180_000,
     settings: {
       ...MOCK_BASE,
-      "aiDevOrchestrator.mockScenario": "clean",
-      "aiDevOrchestrator.localChecks": [
+      "countersign.mockScenario": "clean",
+      "countersign.localChecks": [
         { id: "marker", executable: "node", args: ["-e", "console.log('AIDO_CHECK_MARKER_7391')"] },
       ],
     },
@@ -40,13 +40,13 @@ const CASES: IntegrationCase[] = [
     name: "mock-finding",
     fixture: "mock-repo",
     timeoutMs: 180_000,
-    settings: { ...MOCK_BASE, "aiDevOrchestrator.mockScenario": "finding", "aiDevOrchestrator.localChecks": [] },
+    settings: { ...MOCK_BASE, "countersign.mockScenario": "finding", "countersign.localChecks": [] },
   },
   {
     name: "mock-dismiss",
     fixture: "mock-repo",
     timeoutMs: 180_000,
-    settings: { ...MOCK_BASE, "aiDevOrchestrator.mockScenario": "clean", "aiDevOrchestrator.localChecks": [] },
+    settings: { ...MOCK_BASE, "countersign.mockScenario": "clean", "countersign.localChecks": [] },
   },
   {
     name: "mock-validation-failed",
@@ -54,8 +54,8 @@ const CASES: IntegrationCase[] = [
     timeoutMs: 180_000,
     settings: {
       ...MOCK_BASE,
-      "aiDevOrchestrator.mockScenario": "clean",
-      "aiDevOrchestrator.localChecks": [
+      "countersign.mockScenario": "clean",
+      "countersign.localChecks": [
         { id: "failing", executable: "node", args: ["-e", "process.exit(3)"] },
       ],
     },
@@ -66,9 +66,9 @@ const CASES: IntegrationCase[] = [
     timeoutMs: 300_000,
     settings: {
       ...MOCK_BASE,
-      "aiDevOrchestrator.mockScenario": "clean",
-      "aiDevOrchestrator.checkTimeoutMinutes": 10,
-      "aiDevOrchestrator.localChecks": [{ id: "slow-check", executable: "node", args: ["slow-check.js"] }],
+      "countersign.mockScenario": "clean",
+      "countersign.checkTimeoutMinutes": 10,
+      "countersign.localChecks": [{ id: "slow-check", executable: "node", args: ["slow-check.js"] }],
     },
   },
   {
@@ -77,14 +77,14 @@ const CASES: IntegrationCase[] = [
     timeoutMs: 1_800_000,
     real: true,
     settings: {
-      "aiDevOrchestrator.provider": "claude",
-      "aiDevOrchestrator.codexProvider": "real",
-      "aiDevOrchestrator.claudeExecutable": "claude",
-      "aiDevOrchestrator.codexExecutable": "codex",
-      "aiDevOrchestrator.claudeAllowedTools": ["Read", "Glob", "Grep", "Edit", "Write"],
-      "aiDevOrchestrator.budgetGuardUsd": 1,
-      "aiDevOrchestrator.findingThreshold": "High",
-      "aiDevOrchestrator.localChecks": [{ id: "node-tests", executable: "node", args: ["--test"] }],
+      "countersign.provider": "claude",
+      "countersign.codexProvider": "real",
+      "countersign.claudeExecutable": "claude",
+      "countersign.codexExecutable": "codex",
+      "countersign.claudeAllowedTools": ["Read", "Glob", "Grep", "Edit", "Write"],
+      "countersign.budgetGuardUsd": 1,
+      "countersign.findingThreshold": "High",
+      "countersign.localChecks": [{ id: "node-tests", executable: "node", args: ["--test"] }],
     },
   },
 ];
@@ -149,8 +149,8 @@ function writeSettings(repository: string, settings: Record<string, unknown>): v
 function installedExtensionPath(extensionsDir: string): string {
   const root = resolve(extensionsDir);
   const entry = readdirSync(root, { withFileTypes: true })
-    .find((candidate) => candidate.isDirectory() && candidate.name.startsWith("local.ai-dev-orchestrator-"));
-  if (!entry) throw new Error(`No installed ai-dev-orchestrator extension found in ${root}.`);
+    .find((candidate) => candidate.isDirectory() && candidate.name.startsWith("local.countersign-"));
+  if (!entry) throw new Error(`No installed countersign extension found in ${root}.`);
   return join(root, entry.name);
 }
 

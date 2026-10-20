@@ -1,4 +1,4 @@
-# AI Dev Orchestrator
+# Countersign
 
 A local VS Code extension for one bounded development workflow. The default is a mock run with no AI request. Real implementation uses Claude CLI; real review uses Codex CLI in its read-only sandbox. No direct provider API is used.
 
@@ -12,14 +12,14 @@ The [vNext plan](CHAT_VNEXT_PLAN.md) proposes a VS Code chat, model and account 
 - `provider: mock`, `codexProvider: real`: send the synthetic in-memory diff to Codex after confirmation. This is useful only for exercising the adapter and can consume quota; it does not review a real implementation.
 - `provider: claude`, `codexProvider: real`: Claude edits the repository with the confirmed built-in tool allowlist. Git collects the actual diff, configured local checks run, and Codex reviews that diff. Eligible findings can receive one Claude re-evaluation and correction pass, followed by another check run. There is no second Codex review after correction.
 
-The real Claude mode stays blocked until **AI Dev Orchestrator: Verify Claude Settings Isolation** passes for the exact installed CLI version. That command asks for separate confirmation because it starts two live Claude requests. It creates a temporary project hook, verifies that the control run triggers it, then checks that `--setting-sources ""` suppresses it. An inconclusive result leaves the gate closed. The gate record is stored in `~/.ai-dev-orchestrator/claude-gate.json` with owner-only permissions and becomes inapplicable when the CLI version changes. The test does not edit or copy existing settings or credentials. Existing user hooks can run during the control request.
+The real Claude mode stays blocked until **Countersign: Verify Claude Settings Isolation** passes for the exact installed CLI version. That command asks for separate confirmation because it starts two live Claude requests. It creates a temporary project hook, verifies that the control run triggers it, then checks that `--setting-sources ""` suppresses it. An inconclusive result leaves the gate closed. The gate record is stored in `~/.countersign/claude-gate.json` with owner-only permissions and becomes inapplicable when the CLI version changes. The test does not edit or copy existing settings or credentials. Existing user hooks can run during the control request.
 
 The current local Claude and Codex CLI help declare the required flags. The Claude gate passed on 19 October 2026 for Claude Code 2.1.109. A live Codex review also passed on Codex CLI 0.163.0 against a deliberately broken function in a temporary Git repository; it returned a structured finding for the regression. On 20 October 2026 the full workflow ran live on Linux with those same CLI versions: Claude edited a temporary repository, the configured check passed, and Codex returned a clean structured review. These smoke tests do not establish future account quota, billing, or every sandbox behavior.
 
 ## Use
 
 1. Open exactly one trusted, clean Git repository root in VS Code. Use a repository other than this one for a trial run, so a failed task cannot disturb the extension sources.
-2. Set `aiDevOrchestrator.provider` and `aiDevOrchestrator.codexProvider`. Real Claude requires real Codex. Optionally set executable paths, allowed Claude tools, local checks, timeouts, and the estimated budget guard.
+2. Set `countersign.provider` and `countersign.codexProvider`. Real Claude requires real Codex. Optionally set executable paths, allowed Claude tools, local checks, timeouts, and the estimated budget guard.
 3. For real Claude, run **Verify Claude Settings Isolation** and confirm its two requests. Repeat after a CLI version change.
 4. Run **Start Workflow**, enter the task, review the repository, task, tools, checks and provider disclosure, then confirm.
 5. Use **Show Workflow Status**, **Show Workflow Diff**, **Show Review Details**, **Show Check Results** and **Show Diagnostics** to inspect the outcome. **Cancel Workflow** sends termination to the active process group.
