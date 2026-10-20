@@ -185,10 +185,16 @@ async function runCase(
   resetFixture(repository);
   writeSettings(repository, testCase.settings);
 
-  // The extension host only runs a tests path that sits inside the development extension, so a
-  // packaged run tests a per-case copy of the installed package with the suite placed beside it.
+  // VS Code runs --extensionTestsPath only in extension-development mode, and only for a path
+  // inside the development extension; it also runs it only alongside --disable-extensions, which
+  // would disable an extension installed in the profile. A packaged run therefore loads a copy of
+  // the installed package through the development path, with the compiled suite placed beside it.
+  // That exercises the packaged dist and manifest, including activation and command registration,
+  // but not VS Code's ordinary resolution of an installed extension.
   let extensionPath = EXTENSION_ROOT;
   let suitePath = SUITE_PATH;
+  const extensionsDir = join(caseWork, "extensions");
+  mkdirSync(extensionsDir, { recursive: true });
   if (options.extensionsDir) {
     extensionPath = join(caseWork, "extension-under-test");
     cpSync(installedExtensionPath(options.extensionsDir), extensionPath, { recursive: true });
@@ -199,6 +205,8 @@ async function runCase(
   const launchArgs = [
     repository,
     `--user-data-dir=${userDataDir}`,
+    `--extensionTestsPath=${suitePath}`,
+    `--extensions-dir=${extensionsDir}`,
     "--disable-workspace-trust",
     "--skip-welcome",
     "--skip-release-notes",
@@ -206,12 +214,7 @@ async function runCase(
     "--no-sandbox",
     "--disable-gpu-sandbox",
   ];
-  launchArgs.push(
-    `--extensionDevelopmentPath=${extensionPath}`,
-    `--extensionTestsPath=${suitePath}`,
-    "--disable-extensions",
-    `--extensions-dir=${join(caseWork, "extensions")}`,
-  );
+  launchArgs.push(`--extensionDevelopmentPath=${extensionPath}`, "--disable-extensions");
 
   const started = Date.now();
   const exitCode = await new Promise<number | null>((resolveExit) => {

@@ -77,10 +77,39 @@ function assertChannelIsClean(recorder: Recorder): void {
   assertExcludes(text, DIFF_FRAGMENT, "Output Channel must not contain the full diff");
 }
 
+const CONTRIBUTED_COMMANDS = [
+  "aiDevOrchestrator.startWorkflow",
+  "aiDevOrchestrator.cancelWorkflow",
+  "aiDevOrchestrator.showStatus",
+  "aiDevOrchestrator.showDiagnostics",
+  "aiDevOrchestrator.verifyClaudeGate",
+  "aiDevOrchestrator.showDiff",
+  "aiDevOrchestrator.showReview",
+  "aiDevOrchestrator.showCheckResults",
+];
+
+/**
+ * Proves the extension is discovered, activates, and registers every contributed command.
+ * Activation is lazy behind onCommand events, so it is requested explicitly here rather than
+ * inferred from a command that happens to work.
+ */
+async function assertExtensionActivates(): Promise<void> {
+  const extension = vscode.extensions.getExtension("local.ai-dev-orchestrator");
+  assert(extension !== undefined, "The ai-dev-orchestrator extension was not discovered.");
+  assert(!extension.isActive, "The extension must stay inactive until a command needs it.");
+  await extension.activate();
+  assert(extension.isActive, "The extension did not activate.");
+  const registered = await vscode.commands.getCommands(true);
+  const missing = CONTRIBUTED_COMMANDS.filter((command) => !registered.includes(command));
+  assert(missing.length === 0, `Commands were not registered: ${missing.join(", ")}`);
+}
+
 async function mockClean(): Promise<CaseReport> {
   const repository = repositoryPath();
+  // The recorder must be in place before activation, which is when the Output Channel is created.
   const recorder = installRecorder({ task: "Document the add helper in sample.js", confirm: true });
   try {
+    await assertExtensionActivates();
     const state = await startAndWait(recorder);
     assert(state === "completed_clean", `Expected completed_clean, got ${state}.`);
 
@@ -119,7 +148,7 @@ async function mockClean(): Promise<CaseReport> {
     const dirty = statusPorcelain(repository);
     assert(dirty.length === 0, `Mock workflow must not change the repository, saw: ${dirty.join(", ")}`);
 
-    return { state, modalDetail: modal.detail, checkDocument: checkDocument.content.trim(), dirty };
+    return { state, confirmationShown: true, checkOutputInDocumentOnly: true, dirty };
   } finally {
     recorder.restore();
   }
@@ -227,18 +256,40 @@ async function realWorkflow(): Promise<CaseReport> {
     assertChannelIsClean(recorder);
     assertIncludes(text, "Mode: claude implementation + real review", "Workflow summary");
 
+    // The plan's completion rule: Claude changed the file, Git shows it, the check passed,
+    // Codex returned a structured review, and the final state matches those results.
+    assert(diff.trim().length > 0, "Claude produced no Git diff.");
+    assert(status.some((entry) => entry.endsWith("calc.js")), `calc.js was not modified; status: ${status.join(", ")}`);
+    assert(git(repository, ["rev-parse", "HEAD"]).trim() === baseline, "The workflow must not move HEAD.");
+
+    assert(checkDocument !== undefined, "Show Check Results opened no document.");
+    assertIncludes(checkDocument.content, "node-tests: passed, exit code 0", "Check results");
+    assertIncludes(text, "Configured check results: node-tests=passed", "Workflow summary");
+
+    assert(reviewDocument !== undefined, "Show Review Details opened no document.");
+    assert(
+      !reviewDocument.content.startsWith("Review summary: unavailable"),
+      "Codex returned no review summary.",
+    );
+    assert(diffDocument !== undefined, "Show Workflow Diff opened no document.");
+    assert(diffDocument.content.trim().length > 0, "The diff command produced an empty document.");
+
+    const findings = Number(/Findings: (\d+)/.exec(text)?.[1] ?? "-1");
+    assert(findings >= 0, "The summary reported no finding count.");
+    const expected = findings === 0 ? "completed_clean" : "completed_with_findings";
+    assert(state === expected, `With ${findings} finding(s) the state must be ${expected}, got ${state}.`);
+
+    // Only derived facts are reported: the diff, the prompt and the documents stay out of the record.
     return {
       state,
-      baseline,
-      summary: text,
-      gitDiff: diff,
-      gitStatus: status,
-      diffDocument: diffDocument?.content ?? "",
-      checkDocument: checkDocument?.content ?? "",
-      reviewDocument: reviewDocument?.content ?? "",
+      findings,
+      checkPassed: true,
+      changedFiles: status.map((entry) => entry.slice(3)),
+      diffBytes: diff.length,
+      headUnchanged: true,
+      metrics: /Provider metrics: (.*)/.exec(text)?.[1] ?? "not reported",
       information: recorder.information,
       errors: recorder.errors,
-      modalDetail: recorder.modals[0]?.detail ?? "",
     };
   } finally {
     recorder.restore();

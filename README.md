@@ -38,6 +38,10 @@ Run `npm install`, `npm run compile`, `npm run lint`, and `npm test`. The tests 
 npm run test:integration -- --fixtures=<dir> --work=<dir>
 ```
 
-By default it runs only mock cases and sends no AI request. `--packaged=<extensions-dir>` runs the same cases against an installed VSIX instead of the sources. `--real` adds the live Claude and Codex case, which edits the fixture repository and consumes account quota, so it stays opt-in.
+By default it runs only mock cases and sends no AI request. `--real` adds the live Claude and Codex case, which edits the fixture repository and consumes account quota, so it stays opt-in.
+
+`--packaged=<extensions-dir>` runs the same cases against the files of an installed VSIX instead of the sources. VS Code runs `--extensionTestsPath` only in development mode and only together with `--disable-extensions`, which would disable an extension installed in the profile, so the packaged files are loaded through the development path. That covers the packaged `dist` and manifest, activation and command registration, but not VS Code's ordinary resolution of an installed extension; check that by hand from the isolated profile.
+
+The `--work` directory collects a VS Code log and a `result.json` per case plus an overall `summary.json`. Cases report derived facts only, such as states, counts, check outcomes and metrics; prompts, diffs and document contents are not written there.
 
 The [validation plan](ACTION_PLAN.md) records how the MVP was validated and what remains open.
