@@ -2,6 +2,10 @@
 
 A local VS Code extension for one bounded development workflow. The default is a mock run with no AI request. Real implementation uses Claude CLI; real review uses Codex CLI in its read-only sandbox. No direct provider API is used.
 
+For requirements, installation, a first mock run, real setup and the VS Code commands, read the [user guide in Italian](GUIDA_UTENTE.md). This extension uses the Command Palette, input boxes, an Output Channel and result documents; it does not provide a chat interface.
+
+The [vNext plan](CHAT_VNEXT_PLAN.md) proposes a VS Code chat, model and account selectors, and selectable work modes. Strict consensus and automatic account failover are later, conditional phases. None of these features are part of the current extension.
+
 ## Modes
 
 - `provider: mock`, `codexProvider: mock`: simulate implementation, review, and one correction in memory. No repository code is edited by the providers.
