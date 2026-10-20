@@ -1,0 +1,9 @@
+.vscode/**
+.vscode-test/**
+src/**
+tests/**
+tsconfig.json
+tsconfig.tests.json
+vitest.config.*
+*.ts
+node_modules/**

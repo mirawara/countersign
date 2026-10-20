@@ -1,0 +1,207 @@
+{
+  "name": "ai-dev-orchestrator",
+  "displayName": "AI Dev Orchestrator",
+  "description": "A local VS Code workflow for bounded Claude implementation and Codex review, with mock mode.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:aiDevOrchestrator.startWorkflow",
+    "onCommand:aiDevOrchestrator.cancelWorkflow",
+    "onCommand:aiDevOrchestrator.showStatus",
+    "onCommand:aiDevOrchestrator.showDiagnostics",
+    "onCommand:aiDevOrchestrator.verifyClaudeGate",
+    "onCommand:aiDevOrchestrator.showDiff",
+    "onCommand:aiDevOrchestrator.showReview",
+    "onCommand:aiDevOrchestrator.showCheckResults"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "aiDevOrchestrator.startWorkflow",
+        "title": "AI Dev Orchestrator: Start Workflow"
+      },
+      {
+        "command": "aiDevOrchestrator.cancelWorkflow",
+        "title": "AI Dev Orchestrator: Cancel Workflow"
+      },
+      {
+        "command": "aiDevOrchestrator.showStatus",
+        "title": "AI Dev Orchestrator: Show Workflow Status"
+      },
+      {
+        "command": "aiDevOrchestrator.showDiagnostics",
+        "title": "AI Dev Orchestrator: Show Diagnostics"
+      },
+      {
+        "command": "aiDevOrchestrator.verifyClaudeGate",
+        "title": "AI Dev Orchestrator: Verify Claude Settings Isolation"
+      },
+      {
+        "command": "aiDevOrchestrator.showDiff",
+        "title": "AI Dev Orchestrator: Show Workflow Diff"
+      },
+      {
+        "command": "aiDevOrchestrator.showReview",
+        "title": "AI Dev Orchestrator: Show Review Details"
+      },
+      {
+        "command": "aiDevOrchestrator.showCheckResults",
+        "title": "AI Dev Orchestrator: Show Check Results"
+      }
+    ],
+    "configuration": {
+      "title": "AI Dev Orchestrator",
+      "properties": {
+        "aiDevOrchestrator.provider": {
+          "type": "string",
+          "enum": [
+            "mock",
+            "claude"
+          ],
+          "default": "mock",
+          "description": "Implementation provider. Real Claude requires a successful settings-source isolation test for its exact CLI version."
+        },
+        "aiDevOrchestrator.codexProvider": {
+          "type": "string",
+          "enum": [
+            "mock",
+            "real"
+          ],
+          "default": "mock",
+          "description": "Review provider. The real Codex CLI uses exec with the read-only sandbox and may consume account quota."
+        },
+        "aiDevOrchestrator.claudeExecutable": {
+          "type": "string",
+          "default": "claude",
+          "description": "Claude CLI executable name or path. Real execution requires an exact-version settings-source gate."
+        },
+        "aiDevOrchestrator.codexExecutable": {
+          "type": "string",
+          "default": "codex",
+          "description": "Codex CLI executable name or path."
+        },
+        "aiDevOrchestrator.mockScenario": {
+          "type": "string",
+          "enum": [
+            "clean",
+            "finding",
+            "noChanges",
+            "error"
+          ],
+          "default": "clean",
+          "description": "Mock-only scenario used by the workflow."
+        },
+        "aiDevOrchestrator.claudeAllowedTools": {
+          "type": "array",
+          "default": [
+            "Read",
+            "Glob",
+            "Grep",
+            "Edit",
+            "Write"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Explicit Claude tool allowlist shown before a task. Bash is not supported."
+        },
+        "aiDevOrchestrator.localChecks": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "executable",
+              "args"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "executable": {
+                "type": "string"
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          "description": "Local checks explicitly configured as an executable and argument array. No shell is used."
+        },
+        "aiDevOrchestrator.budgetGuardUsd": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0.01,
+          "description": "Claude CLI estimated cost guard per print invocation; it does not guarantee a billing cap."
+        },
+        "aiDevOrchestrator.taskTimeoutMinutes": {
+          "type": "number",
+          "default": 30,
+          "minimum": 1,
+          "maximum": 180
+        },
+        "aiDevOrchestrator.providerTimeoutMinutes": {
+          "type": "number",
+          "default": 15,
+          "minimum": 1,
+          "maximum": 60
+        },
+        "aiDevOrchestrator.checkTimeoutMinutes": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 30
+        },
+        "aiDevOrchestrator.findingThreshold": {
+          "type": "string",
+          "enum": [
+            "Critical",
+            "High",
+            "Medium",
+            "Low",
+            "Info"
+          ],
+          "default": "High",
+          "description": "Minimum finding severity eligible for Claude's single correction pass."
+        },
+        "aiDevOrchestrator.terminationGracePeriodMs": {
+          "type": "number",
+          "default": 1000,
+          "minimum": 100,
+          "maximum": 10000,
+          "description": "Grace period before terminating a provider or check process group with SIGKILL."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -watch -p .",
+    "vscode:prepublish": "npm run compile",
+    "package": "npm run compile",
+    "lint": "eslint src tests",
+    "test": "vitest run && npm run typecheck:tests",
+    "typecheck:tests": "tsc -p tsconfig.tests.json --noEmit"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.95.0",
+    "eslint": "^10.13.0",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.71.2",
+    "vitest": "^4.1.12"
+  }
+}
