@@ -3,3 +3,5 @@ dist/
 .vscode-test/
 *.vsix
 npm-debug.log*
+.integration-dist/
+.test-dist/

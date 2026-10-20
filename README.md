@@ -10,11 +10,11 @@ A local VS Code extension for one bounded development workflow. The default is a
 
 The real Claude mode stays blocked until **AI Dev Orchestrator: Verify Claude Settings Isolation** passes for the exact installed CLI version. That command asks for separate confirmation because it starts two live Claude requests. It creates a temporary project hook, verifies that the control run triggers it, then checks that `--setting-sources ""` suppresses it. An inconclusive result leaves the gate closed. The gate record is stored in `~/.ai-dev-orchestrator/claude-gate.json` with owner-only permissions and becomes inapplicable when the CLI version changes. The test does not edit or copy existing settings or credentials. Existing user hooks can run during the control request.
 
-The current local Claude and Codex CLI help declare the required flags. The Claude gate passed on 19 October 2026 for Claude Code 2.1.109. A live Codex review also passed on Codex CLI 0.163.0 against a deliberately broken function in a temporary Git repository; it returned a structured finding for the regression. The full Claude implementation and Codex review workflow has not been run live. These smoke tests do not establish future account quota, billing, or every sandbox behavior.
+The current local Claude and Codex CLI help declare the required flags. The Claude gate passed on 19 October 2026 for Claude Code 2.1.109. A live Codex review also passed on Codex CLI 0.163.0 against a deliberately broken function in a temporary Git repository; it returned a structured finding for the regression. On 20 October 2026 the full workflow ran live on Linux with those same CLI versions: Claude edited a temporary repository, the configured check passed, and Codex returned a clean structured review. These smoke tests do not establish future account quota, billing, or every sandbox behavior.
 
 ## Use
 
-1. Open exactly one trusted, clean Git repository root in VS Code. This extension project directory itself has no Git history in the supplied workspace; use another repository for a trial run.
+1. Open exactly one trusted, clean Git repository root in VS Code. Use a repository other than this one for a trial run, so a failed task cannot disturb the extension sources.
 2. Set `aiDevOrchestrator.provider` and `aiDevOrchestrator.codexProvider`. Real Claude requires real Codex. Optionally set executable paths, allowed Claude tools, local checks, timeouts, and the estimated budget guard.
 3. For real Claude, run **Verify Claude Settings Isolation** and confirm its two requests. Repeat after a CLI version change.
 4. Run **Start Workflow**, enter the task, review the repository, task, tools, checks and provider disclosure, then confirm.
@@ -32,4 +32,12 @@ Windows workflow execution is blocked until process-tree cancellation is impleme
 
 Run `npm install`, `npm run compile`, `npm run lint`, and `npm test`. The tests use mocked provider runners and temporary Git repositories; they do not send AI requests. Open the folder in VS Code and use the Run and Debug launch configuration to start an Extension Development Host.
 
-The [validation plan](ACTION_PLAN.md) tracks the remaining VS Code, live workflow, and packaging checks before treating the MVP as ready for regular use.
+`npm run test:integration` drives the real VS Code commands in an extension host, with the input box and confirmation modal answered by the test harness. It needs a display and a temporary fixture repository, and takes the fixture and working directories as arguments:
+
+```sh
+npm run test:integration -- --fixtures=<dir> --work=<dir>
+```
+
+By default it runs only mock cases and sends no AI request. `--packaged=<extensions-dir>` runs the same cases against an installed VSIX instead of the sources. `--real` adds the live Claude and Codex case, which edits the fixture repository and consumes account quota, so it stays opt-in.
+
+The [validation plan](ACTION_PLAN.md) records how the MVP was validated and what remains open.

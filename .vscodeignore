@@ -2,8 +2,11 @@
 .vscode-test/**
 src/**
 tests/**
+.integration-dist/**
+.test-dist/**
 tsconfig.json
 tsconfig.tests.json
+tsconfig.integration.json
 vitest.config.*
 *.ts
 node_modules/**
