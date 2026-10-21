@@ -1,8 +1,10 @@
-# Guida utente — Countersign
+# Guida utente — workflow MVP Countersign
+
+Per la nuova sidebar chat, leggi [guida-chat.md](guida-chat.md). Questa pagina descrive il workflow originale avviato dalla Command Palette.
 
 ## Che cosa si apre in VS Code
 
-L'estensione non apre una chat. Avvii un comando dalla Command Palette, scrivi un task in una casella di input e confermi l'esecuzione in una finestra modale. L'avanzamento appare nel pannello **Output → Countersign**; altri comandi aprono il diff, la review e l'output dei controlli in documenti temporanei dell'editor.
+Questo percorso non usa la chat. Avvii un comando dalla Command Palette, scrivi un task in una casella di input e confermi l'esecuzione in una finestra modale. L'avanzamento appare nel pannello **Output → Countersign**; altri comandi aprono il diff, la review e l'output dei controlli in documenti temporanei dell'editor.
 
 Ogni avvio è un workflow separato. Non ci sono conversazioni, messaggi successivi, allegati o un pannello laterale dedicato. L'estensione conserva in memoria solo il risultato più recente nella sessione corrente di VS Code. Le estensioni [Codex per IDE](https://learn.chatgpt.com/docs/codex/ide) e [Claude Code per VS Code](https://code.claude.com/docs/en/vs-code) offrono invece un'interazione conversazionale più ampia. Questo MVP serve a eseguire un percorso preciso: implementazione con Claude, controlli configurati, review con Codex ed eventuale singola correzione.
 
@@ -32,7 +34,7 @@ La combinazione `claude` + `mock` non è consentita. I valori delle modalità si
 
 Se hai il file `.vsix`, in VS Code apri la Command Palette (`Ctrl+Shift+P` su Linux/Windows, `Cmd+Shift+P` su macOS), esegui **Extensions: Install from VSIX...** e seleziona il file. Ricarica la finestra se VS Code lo richiede. Cerca **Countersign** nella lista delle estensioni installate.
 
-Il VSIX non è incluso nel repository Git. Per provarla dai sorgenti, apri questa cartella in VS Code, esegui `npm ci`, poi avvia la configurazione **Run Countersign** con `F5`. Nell'Extension Development Host apri il repository Git su cui vuoi fare la prova. Per build e test del progetto vedi il [README](README.md#development).
+Il VSIX non è incluso nel repository Git. Per provarla dai sorgenti, apri questa cartella in VS Code, esegui `npm ci`, poi avvia la configurazione **Run Countersign** con `F5`. Nell'Extension Development Host apri il repository Git su cui vuoi fare la prova. Per build e test del progetto vedi il [README](../README.md#development).
 
 ## Prima prova senza richieste AI
 
