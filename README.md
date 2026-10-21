@@ -1,51 +1,178 @@
-# Countersign
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="media/countersign-banner-dark.png">
+    <img src="media/countersign-banner-light.png" alt="Countersign" width="520">
+  </picture>
+</p>
 
-A local VS Code extension for one bounded development workflow. The default is a mock run with no AI request. Real implementation uses Claude CLI; real review uses Codex CLI in its read-only sandbox. No direct provider API is used.
+<p align="center">
+  <em>Two AI agents, one countersigned diff.</em><br>
+  A VS Code sidebar chat where Claude writes the code and Codex reviews it — using the CLIs you already installed and signed in to.
+</p>
 
-For requirements, installation, a first mock run, real setup and the VS Code commands, read the [user guide in Italian](GUIDA_UTENTE.md). This extension uses the Command Palette, input boxes, an Output Channel and result documents; it does not provide a chat interface.
+<p align="center">
+  <a href="https://github.com/mirawara/countersign/actions/workflows/ci.yml"><img src="https://github.com/mirawara/countersign/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="Apache-2.0"></a>
+  <img src="https://img.shields.io/badge/VS%20Code-%E2%89%A5%201.106-0078d4.svg" alt="VS Code 1.106 or newer">
+  <img src="https://img.shields.io/badge/platform-Linux-informational.svg" alt="Linux">
+  <img src="https://img.shields.io/badge/status-early%20preview-orange.svg" alt="Early preview">
+  <img src="https://img.shields.io/badge/install-from%20source-lightgrey.svg" alt="Install from source">
+</p>
 
-The [vNext plan](CHAT_VNEXT_PLAN.md) proposes a VS Code chat, model and account selectors, and selectable work modes. Strict consensus and automatic account failover are later, conditional phases. None of these features are part of the current extension.
+---
 
-## Modes
+Countersign puts a persistent chat in the VS Code sidebar and lets you hand a repository task to Claude or Codex. Its point is the **`Balanced` workflow**: Claude implements the change, your configured checks run against the real working tree, and Codex reviews the actual Git diff in a read-only sandbox. "Done" means a diff that survived another agent's review, not a model saying it finished.
 
-- `provider: mock`, `codexProvider: mock`: simulate implementation, review, and one correction in memory. No repository code is edited by the providers.
-- `provider: mock`, `codexProvider: real`: send the synthetic in-memory diff to Codex after confirmation. This is useful only for exercising the adapter and can consume quota; it does not review a real implementation.
-- `provider: claude`, `codexProvider: real`: Claude edits the repository with the confirmed built-in tool allowlist. Git collects the actual diff, configured local checks run, and Codex reviews that diff. Eligible findings can receive one Claude re-evaluation and correction pass, followed by another check run. There is no second Codex review after correction.
+It is built around a few deliberate constraints:
 
-The real Claude mode stays blocked until **Countersign: Verify Claude Settings Isolation** passes for the exact installed CLI version. That command asks for separate confirmation because it starts two live Claude requests. It creates a temporary project hook, verifies that the control run triggers it, then checks that `--setting-sources ""` suppresses it. An inconclusive result leaves the gate closed. The gate record is stored in `~/.countersign/claude-gate.json` with owner-only permissions and becomes inapplicable when the CLI version changes. The test does not edit or copy existing settings or credentials. Existing user hooks can run during the control request.
+- **Your accounts, your login.** The extension launches the `claude` and `codex` CLIs you authenticated yourself. It ships no login, and it never reads, stores or forwards tokens, cookies or API keys. See [Your Claude and Codex accounts](#your-claude-and-codex-accounts).
+- **Nothing runs unasked.** Every write and every command surfaces as a permission request. No permission is inferred from a model's text, and a proposed command is never executed automatically.
+- **Verifiable isolation.** Real Claude turns stay blocked until an isolation gate passes for the exact installed CLI and SDK versions.
+- **Mock-only CI.** The automated suite never sends a provider request. Live probes are separate, opt-in scripts against temporary repositories.
 
-The current local Claude and Codex CLI help declare the required flags. The Claude gate passed on 19 October 2026 for Claude Code 2.1.109. A live Codex review also passed on Codex CLI 0.163.0 against a deliberately broken function in a temporary Git repository; it returned a structured finding for the regression. On 20 October 2026 the full workflow ran live on Linux with those same CLI versions: Claude edited a temporary repository, the configured check passed, and Codex returned a clean structured review. These smoke tests do not establish future account quota, billing, or every sandbox behavior.
+> **Early preview.** This is a personal tool made public, verified on Linux. Several exit criteria are still open — see [Status](#status) and the [roadmap](ROADMAP.md).
 
-## Use
+## Features
 
-1. Open exactly one trusted, clean Git repository root in VS Code. Use a repository other than this one for a trial run, so a failed task cannot disturb the extension sources.
-2. Set `countersign.provider` and `countersign.codexProvider`. Real Claude requires real Codex. Optionally set executable paths, allowed Claude tools, local checks, timeouts, and the estimated budget guard.
-3. For real Claude, run **Verify Claude Settings Isolation** and confirm its two requests. Repeat after a CLI version change.
-4. Run **Start Workflow**, enter the task, review the repository, task, tools, checks and provider disclosure, then confirm.
-5. Use **Show Workflow Status**, **Show Workflow Diff**, **Show Review Details**, **Show Check Results** and **Show Diagnostics** to inspect the outcome. **Cancel Workflow** sends termination to the active process group.
+- **Sidebar chat** with multiple threads per workspace, search, rename, Markdown export and a transcript that survives closing the view. Your messages sit on the right, agent replies on the left with headings, lists and syntax-delimited code blocks.
+- **Per-turn selectors** for provider, model and effort/reasoning level, filled from what the installed CLI and your account actually offer — not a hard-coded list. Claude effort and Codex reasoning effort stay separate parameters.
+- **`Balanced` workflow** from the sidebar or the Command Palette: implementation, local checks, structured review of the real diff, and one Claude correction pass with another check run.
+- **Chat modes** you define yourself, each with its own instruction and per-turn timeout.
+- **Visible accounting**: account label, model actually used, token counts, the provider's own cost estimate and quota status when the provider exposes them, plus `unavailable` when it does not.
+- **Local artefacts**: workflow diff, review findings with evidence and raw check output, opened on demand in temporary editor documents.
+- **One task per repository**, enforced before a turn starts, so two chats cannot edit the same working tree at once.
 
-The Output Channel contains task IDs, states and bounded summaries, but not the task prompt, diff, finding evidence or raw check output. The detail commands open local temporary editor documents on demand. These documents may contain sensitive repository data; close them when finished. Git-ignored files are outside normal status and diff collection.
+## Status
 
-Local checks are configured as an executable and argument array, never inferred from repository scripts. They can change repository files. Real runs include those tracked or untracked changes in the review diff. In mock runs, such changes cause validation failure so a synthetic review cannot be reported as clean. The workflow never resets, stages, commits, or cleans files.
+| Area | State |
+| --- | --- |
+| `Balanced` workflow (implement → check → review → one correction) | Verified live on Linux |
+| Sidebar chat, threads, streaming, permissions, diff | Works; binary attachments missing, full-restart persistence verified at store level only |
+| Claude via Agent SDK, Codex via app-server | Works; Codex `app-server` is marked experimental upstream, with the `exec` path kept as fallback |
+| Cross-window task lock | In-memory only: two VS Code windows are not coordinated |
+| macOS | Not verified |
+| Windows | **Blocked**: process-tree cancellation is not implemented there |
+| `Strict` consensus mode, account profiles, automatic failover | Not built; see [roadmap](ROADMAP.md) |
 
-The real diff collector blocks excluded paths (including common secret names, dependencies and build output), binary new files, more than 40 changed files, new text files over 16 KiB, and diffs over 256 KiB. Filename exclusions do not prove that every secret is absent. The reviewer can still read repository files as context under its sandbox. A failed or cancelled real run can leave partial edits; inspect Git status before restarting.
+## Requirements
 
-Windows workflow execution is blocked until process-tree cancellation is implemented there. On POSIX, cancellation and output-limit handling escalate from SIGTERM to SIGKILL after the configured grace period.
+- **Linux.** macOS is unverified; Windows execution is blocked.
+- **VS Code 1.106** or newer, with the folder opened as a **trusted** workspace.
+- **Git**, and exactly one repository root open in the window.
+- **[Claude Code CLI](https://code.claude.com/docs/en/overview)** and/or **[Codex CLI](https://learn.chatgpt.com/docs/overview)**, installed and already signed in. Verified against Claude Code 2.1.109 with Agent SDK 0.3.306, and Codex CLI 0.163.0.
+- **Node.js and npm** only to build from source or produce a VSIX.
+
+## Install
+
+**From source — the supported path.**
+
+```sh
+git clone https://github.com/mirawara/countersign.git
+cd countersign
+npm install
+npm run compile
+npm run package                                  # produces countersign-0.1.0.vsix
+code --install-extension countersign-0.1.0.vsix  # then: Developer: Reload Window
+```
+
+Or press <kbd>F5</kbd> in VS Code to launch an Extension Development Host.
+
+**Why no prebuilt download?** A packaged VSIX bundles `@anthropic-ai/claude-agent-sdk`, whose licence reads "© Anthropic PBC. All rights reserved." Apache-2.0 covers this repository's own code, not a third-party package inside an artefact, so no `.vsix` is published here until Anthropic's terms are confirmed in writing. Building locally keeps that dependency coming to you from npm under Anthropic's own terms. See [docs/third-party-accounts.md](docs/third-party-accounts.md#redistributing-the-package-itself).
+
+## Quick start
+
+1. Open **one trusted Git repository** in VS Code — not this one, so a failed task cannot disturb the extension sources.
+2. Run **Countersign: Open Chat** (<kbd>F1</kbd>). The view opens in the Secondary Side Bar on the right.
+3. Pick a **provider**, **model** and **effort**, then send a message. **Add file** attaches the active file or your current selection as a reference.
+4. For real Claude turns, run **Countersign: Verify Claude Chat Isolation** once per CLI/SDK version and confirm its two live requests. Until it passes, real Claude chat stays closed.
+5. Approve or deny each permission request as it appears. **Stop** cancels the turn and its process tree.
+
+For the full walkthrough — account setup, modes, storage, troubleshooting — read the [chat guide](docs/guida-chat.md) (Italian).
+
+## The `Balanced` workflow
+
+Select **Claude + Codex (Balanced)** as the mode, or run **Countersign: Start Workflow** from the Command Palette, then:
+
+1. From the sidebar, Claude proposes a read-only plan. Necessary clarification questions appear in the chat; answer there, then approve the plan in the chat. The Command Palette entry retains its settings confirmation dialog.
+2. Claude edits the repository using the approved plan and confirmed built-in tool allowlist. Bash and MCP are excluded. If an agent needs a decision during implementation, review or correction, the workflow pauses for an answer in the chat.
+3. Git collects the real diff; your configured local checks run against the working tree.
+4. Codex reviews that diff in a read-only sandbox and returns structured findings with evidence.
+5. Findings at or above your threshold get one Claude re-evaluation and correction pass, followed by another check run. There is no second Codex review after the correction.
+
+The sidebar leaves a detailed report in the thread, including the plan, answers, changed files, checks, findings, correction and provider usage. **Show diff** on the report opens the saved patch. Questions can pause between CLI turns; an in-progress tool call cannot be interrupted for a question. If files changed before a question, the workflow checks that their Git snapshot is unchanged before it resumes.
+
+The diff collector refuses excluded paths (common secret names, dependencies, build output), binary new files, more than 40 changed files, new text files over 16 KiB and diffs over 256 KiB. Filename exclusions do not prove that no secret is present. Local checks are configured as an executable plus arguments, never inferred from repository scripts; they may change files, and real runs include those changes in the reviewed diff. The workflow never resets, stages, commits or cleans anything.
+
+## Safety model
+
+| Guard | What it means |
+| --- | --- |
+| Isolation gate | Real Claude turns are blocked until a reproducible probe shows which setting sources the CLI reads and where session state is written, for the exact installed versions. The record lives in `~/.countersign/claude-gate.json` with owner-only permissions and lapses when a version changes. |
+| Explicit permissions | Chat mode asks for each write or command it supports. Balanced shows its plan, tool allowlist and configured checks before execution; approving that plan authorizes those bounded actions for the task. |
+| Workspace trust | Real turns require a trusted workspace, one repository root and a verified platform. |
+| No credentials | The extension never reads, copies, stores, displays or transmits tokens, cookies, session files or API keys, and runs no telemetry. |
+| Bounded output | The Output Channel carries task IDs, states and bounded summaries — never prompts, diffs, finding evidence or raw check output. The detailed report stays in workspace chat history; full diffs, review details and check output open on demand and may contain sensitive repository data. |
+| Cancellation | **Stop** and **Cancel Workflow** escalate from SIGTERM to SIGKILL across the process group after a grace period. |
+
+Found a security problem? See [SECURITY.md](SECURITY.md).
+
+## Your Claude and Codex accounts
+
+Countersign drives CLIs you installed and signed in to. It has no login of its own and cannot create one for you. Turns consume your own subscription limits or API credits; the US dollar figures shown in chat are the CLI's own estimates at API list prices, not a charge on a subscription seat. When a limit is reached, the turn stops and explains — there is no account rotation and no automatic failover.
+
+**If you plan to fork or redistribute this, read [docs/third-party-accounts.md](docs/third-party-accounts.md) first.** Anthropic requires prior approval before a third-party product offers claude.ai login or claude.ai usage limits, and OpenAI treats in-product ChatGPT sign-in as its own qualified path. This project stays clear of both by shipping no login; adding one is not a small feature.
+
+Countersign is an independent project, not affiliated with or endorsed by Anthropic or OpenAI.
+
+## Configuration
+
+Settings live under `countersign.*`. The ones you are most likely to touch:
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `provider` | `mock` | Implementation provider for the Command Palette workflow (`mock` or `claude`). The sidebar always uses real agents. |
+| `codexProvider` | `mock` | Review provider for the Command Palette workflow (`mock` or `real`). |
+| `claudeExecutable` / `codexExecutable` | `claude` / `codex` | Paths to the CLIs. |
+| `claudeAllowedTools` | `Read, Glob, Grep, Edit, Write` | Tools Claude may use. Bash and MCP cannot be added. |
+| `localChecks` | `[]` | Checks as `{ id, executable, args }`. Never inferred from `package.json`. |
+| `findingThreshold` | `High` | Minimum severity that triggers a correction pass. |
+| `taskTimeoutMinutes`, `providerTimeoutMinutes`, `checkTimeoutMinutes` | `30`, `15`, `5` | Guard rails for the extension's loop. |
+| `budgetGuardUsd` | `1` | Stops a run past an estimated spend. An estimate, not a billing cap. |
+
+`mock` settings exist for the test suite; the sidebar does not offer a mock provider.
+
+## Documentation
+
+- [Chat guide](docs/guida-chat.md) — sidebar, selectors, accounts, modes, storage, troubleshooting (Italian)
+- [Workflow guide](docs/guida-utente.md) — the Command Palette workflow end to end (Italian)
+- [Verification results](docs/verifiche.md) — probes, versions and limits behind every capability claim (Italian)
+- [Claude and Codex accounts](docs/third-party-accounts.md) — what the extension does with your accounts, and the redistribution question
+- [Roadmap](ROADMAP.md) — CLI, macOS and Windows support, `Strict` mode, what is not planned
+- [Changelog](CHANGELOG.md)
 
 ## Development
 
-Run `npm install`, `npm run compile`, `npm run lint`, and `npm test`. The tests use mocked provider runners and temporary Git repositories; they do not send AI requests. Open the folder in VS Code and use the Run and Debug launch configuration to start an Extension Development Host.
+```sh
+npm install
+npm run compile      # tsc
+npm run lint         # eslint
+npm test             # vitest + test typecheck, no provider requests
+```
 
-`npm run test:integration` drives the real VS Code commands in an extension host, with the input box and confirmation modal answered by the test harness. It needs a display and a temporary fixture repository, and takes the fixture and working directories as arguments:
+Unit tests use mocked provider runners and temporary Git repositories. The webview script is exercised through a DOM double, so the chat rendering is covered without a browser.
+
+Integration cases drive the real VS Code commands in an extension host, with the input box and confirmation modal answered by the harness. They need a display and a fixture repository:
 
 ```sh
 npm run test:integration -- --fixtures=<dir> --work=<dir>
 ```
 
-By default it runs only mock cases and sends no AI request. `--real` adds the live Claude and Codex case, which edits the fixture repository and consumes account quota, so it stays opt-in.
+By default only mock cases run and no provider request is sent. `--real` adds the live Claude and Codex workflow case, which edits the fixture repository and consumes account quota. `--packaged=<extensions-dir>` runs the cases against the files of an installed VSIX instead of the sources.
 
-`--packaged=<extensions-dir>` runs the same cases against the files of an installed VSIX instead of the sources. VS Code runs `--extensionTestsPath` only in development mode and only together with `--disable-extensions`, which would disable an extension installed in the profile, so the packaged files are loaded through the development path. That covers the packaged `dist` and manifest, activation and command registration, but not VS Code's ordinary resolution of an installed extension; check that by hand from the isolated profile.
+Live probe scripts under `scripts/` (`--live`) talk to the real CLIs on temporary repositories and consume quota. They are run by hand, never from CI.
 
-The `--work` directory collects a VS Code log and a `result.json` per case plus an overall `summary.json`. Cases report derived facts only, such as states, counts, check outcomes and metrics; prompts, diffs and document contents are not written there.
+See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
 
-The [validation plan](ACTION_PLAN.md) records how the MVP was validated and what remains open.
+## License
+
+[Apache-2.0](LICENSE) © 2026 Lorenzo Mirabella.

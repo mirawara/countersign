@@ -1,0 +1,26 @@
+name: Feature request
+description: Suggest a capability, with the task it would unblock
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check ROADMAP.md first: some items are planned, and a few are deliberately not planned
+        (account failover, credential handling, provider login inside the extension).
+  - type: textarea
+    id: task
+    attributes:
+      label: What are you trying to finish?
+      description: The concrete workflow you cannot complete today, not the feature name.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you have the extension do?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried instead

@@ -1,0 +1,48 @@
+name: Bug report
+description: Something behaves differently from what the documentation says
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not report a security problem here — use the private advisory form linked in SECURITY.md.
+        Strip proprietary code, prompts and diffs before pasting logs: the extension does not redact them for you.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what you got.
+    validations:
+      required: true
+  - type: textarea
+    id: versions
+    attributes:
+      label: Versions
+      description: OS, VS Code, Countersign, Claude Code CLI, Codex CLI.
+      placeholder: |
+        OS: Ubuntu 24.04
+        VS Code: 1.106.0
+        Countersign: 0.1.0
+        Claude Code: 2.1.109
+        Codex CLI: 0.163.0
+    validations:
+      required: true
+  - type: dropdown
+    id: path
+    attributes:
+      label: Which path
+      options:
+        - Sidebar chat (Claude)
+        - Sidebar chat (Codex)
+        - Balanced workflow from the sidebar
+        - Start Workflow from the Command Palette
+        - Isolation gate verification
+        - Build, packaging or tests
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Relevant output
+      description: Lines from the Countersign Output Channel, or the error shown in the chat.
+      render: text
