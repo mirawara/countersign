@@ -44,7 +44,7 @@ Consequences for anyone redistributing this code:
 4. **Adding a ChatGPT login requires choosing and qualifying for one of OpenAI's documented paths**, with your own OAuth client and token handling, under the terms attached to that path.
 5. **Offering Countersign as a hosted or managed service**, where your infrastructure holds or proxies anyone's provider credentials, is a different product with different terms, and none of the review above covers it.
 
-The evidence and version-by-version results behind these statements are in [verifiche.md](verification.md). That review concluded **permitted with limits for personal use**; it did not clear distribution with provider login or usage limits, and no later work in this repository has changed that.
+The evidence and version-by-version results behind these statements are in [verification.md](verification.md). That review concluded **permitted with limits for personal use**; it did not clear distribution with provider login or usage limits, and no later work in this repository has changed that.
 
 ## Redistributing the package itself
 
