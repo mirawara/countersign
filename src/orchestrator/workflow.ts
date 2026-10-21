@@ -18,19 +18,29 @@ export interface WorkflowInput {
   codex: AIProvider;
   signal: AbortSignal;
   onEvent: (event: WorkflowEvent) => void;
+  plan?: string;
+  clarifications?: WorkflowResult["clarifications"];
+  selectedModels?: WorkflowResult["selectedModels"];
+  initialMetrics?: WorkflowResult["metrics"];
+  askQuestion?: (phase: "implementing" | "reviewing" | "correcting", question: string,
+    signal: AbortSignal) => Promise<string | undefined>;
 }
 
 export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult> {
   const taskId = randomUUID();
   const startedAt = new Date().toISOString();
   const checks: CheckResult[] = [];
-  const metrics: WorkflowResult["metrics"] = [];
+  const metrics: WorkflowResult["metrics"] = [...(input.initialMetrics ?? [])];
+  const events: WorkflowEvent[] = [];
   let workingTreeEntries: string[] = [];
   let state: WorkflowState = "awaiting_confirmation";
   let simulatedDiff: string | undefined;
   let diff: string | undefined;
   let changedPaths: string[];
   let reviewSummary: string | undefined;
+  let implementationSummary: string | undefined;
+  let correctionSummary: string | undefined;
+  const clarifications = [...(input.clarifications ?? [])];
   let finalFindings: Finding[] = [];
   let providerRequestAttempted = false;
   let timedOut = false;
@@ -48,7 +58,9 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
   const emit = (next: WorkflowState, message: string): void => {
     assertWorkflowTransition(state, next);
     state = next;
-    input.onEvent({ taskId, state, message, timestamp: new Date().toISOString() });
+    const event = { taskId, state, message, timestamp: new Date().toISOString() };
+    events.push(event);
+    input.onEvent(event);
   };
 
   const makeResult = (message: string): WorkflowResult => ({
@@ -61,6 +73,13 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
     simulatedDiff,
     diff,
     reviewSummary,
+    plan: input.plan,
+    implementationSummary,
+    correctionSummary,
+    clarifications,
+    selectedModels: input.selectedModels,
+    configuredChecks: input.config.localChecks,
+    events,
     findings: finalFindings,
     checks,
     workingTreeEntries,
@@ -79,6 +98,26 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
   const ensureActive = (): void => {
     if (workflowController.signal.aborted) throw abortFailure();
   };
+
+  const askQuestion = async (phase: "implementing" | "reviewing" | "correcting", question: string,
+    prior: { question: string; answer: string }[]): Promise<void> => {
+    if (!input.askQuestion || prior.length >= 3) {
+      throw new Error(`${phase} needs another user decision. The workflow stopped after three questions in this phase.`);
+    }
+    emit("awaiting_input", `${phase}: waiting for a user answer.`);
+    const answer = await awaitAbortable(input.askQuestion(phase, question, workflowController.signal),
+      workflowController.signal, abortFailure);
+    ensureActive();
+    if (!answer?.trim() || answer.length > 20_000) throw new ProcessFailure("cancelled", "Question was not answered.");
+    prior.push({ question, answer: answer.trim() });
+    clarifications.push({ phase, question, answer: answer.trim() });
+    emit(phase, `User answered a ${phase} question; the agent is continuing.`);
+  };
+
+  const executionTask = [input.task,
+    input.clarifications?.length ? `Planning decisions:\n${input.clarifications.map(({ question, answer }) => `Q: ${question}\nA: ${answer}`).join("\n")}` : "",
+    input.plan ? `Approved plan (follow this; ask before materially changing it):\n${input.plan}` : "",
+  ].filter(Boolean).join("\n\n");
 
   try {
     ensureActive();
@@ -107,14 +146,29 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
       ? "Claude CLI is implementing the task with the confirmed tools."
       : "Mock Claude is simulating implementation; no files will be changed.");
     providerRequestAttempted = realImplementation;
-    const implementation = await awaitAbortable(input.claude.execute({
-      taskId,
-      mode: "implement",
-      repository: input.repository,
-      task: input.task,
-      signal: workflowController.signal,
-    }), workflowController.signal, abortFailure);
+    const implementationAnswers: { question: string; answer: string }[] = [];
+    let partialImplementationDiff: string | undefined;
+    let implementation: AgentResult;
+    while (true) {
+      implementation = await awaitAbortable(input.claude.execute({
+        taskId, mode: "implement", repository: input.repository, task: executionTask,
+        clarifications: implementationAnswers, diff: partialImplementationDiff, signal: workflowController.signal,
+      }), workflowController.signal, abortFailure);
+      ensureActive();
+      if (!implementation.question) break;
+      const changes = await readGitChanges(input.repository);
+      const snapshot = JSON.stringify({ diff: changes.diff, entries: changes.entries });
+      partialImplementationDiff = changes.diff;
+      await askQuestion("implementing", changes.paths.length
+        ? `${implementation.question}\n\nClaude has already changed ${changes.paths.length} file(s). Those changes will be kept while you answer.`
+        : implementation.question, implementationAnswers);
+      const current = await readGitChanges(input.repository);
+      if (JSON.stringify({ diff: current.diff, entries: current.entries }) !== snapshot) {
+        throw new Error("The repository changed while waiting for an implementation answer. Inspect the diff before continuing.");
+      }
+    }
     ensureActive();
+    implementationSummary = implementation.message;
     if (implementation.metrics) metrics.push({ provider: input.claude.id, ...implementation.metrics });
     if (realImplementation) {
       const changes = await readGitChanges(input.repository);
@@ -167,17 +221,25 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
       ? `Codex CLI is reviewing the ${realImplementation ? "actual repository diff" : "in-memory simulated change"} in its read-only sandbox.`
       : "Mock Codex is reviewing the in-memory simulated change.");
     let review: AgentResult;
+    const reviewAnswers: { question: string; answer: string }[] = [];
     try {
       providerRequestAttempted ||= input.config.codexProvider === "real";
-      review = await awaitAbortable(input.codex.execute({
-        taskId,
-        mode: "review",
-        repository: input.repository,
-        task: input.task,
-        diff,
-        simulatedDiff,
-        signal: workflowController.signal,
-      }), workflowController.signal, abortFailure);
+      while (true) {
+        review = await awaitAbortable(input.codex.execute({
+          taskId, mode: "review", repository: input.repository, task: executionTask,
+          diff, simulatedDiff, clarifications: reviewAnswers, signal: workflowController.signal,
+        }), workflowController.signal, abortFailure);
+        ensureActive();
+        if (!review.question) break;
+        const beforeAnswer = realImplementation ? await readGitChanges(input.repository) : undefined;
+        await askQuestion("reviewing", review.question, reviewAnswers);
+        if (beforeAnswer) {
+          const afterAnswer = await readGitChanges(input.repository);
+          if (JSON.stringify(afterAnswer) !== JSON.stringify(beforeAnswer)) {
+            throw new Error("The repository changed while waiting for a review answer. Inspect the diff before continuing.");
+          }
+        }
+      }
     } catch (error) {
       if (workflowController.signal.aborted) throw abortFailure();
       if (error instanceof CodexProviderError) {
@@ -236,17 +298,30 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
     }
 
     emit("correcting", `${realImplementation ? "Claude CLI" : "Mock Claude"} is evaluating ${candidates.length} eligible finding(s) for one correction pass.`);
-    const correction = await awaitAbortable(input.claude.execute({
-      taskId,
-      mode: "correct",
-      repository: input.repository,
-      task: input.task,
-      diff,
-      simulatedDiff,
-      findings: candidates,
-      signal: workflowController.signal,
-    }), workflowController.signal, abortFailure);
+    const correctionAnswers: { question: string; answer: string }[] = [];
+    let partialCorrectionDiff = diff;
+    let correction: AgentResult;
+    while (true) {
+      correction = await awaitAbortable(input.claude.execute({
+        taskId, mode: "correct", repository: input.repository, task: executionTask,
+        diff: partialCorrectionDiff, simulatedDiff, findings: candidates, clarifications: correctionAnswers,
+        signal: workflowController.signal,
+      }), workflowController.signal, abortFailure);
+      ensureActive();
+      if (!correction.question) break;
+      const changes = await readGitChanges(input.repository);
+      const snapshot = JSON.stringify({ diff: changes.diff, entries: changes.entries });
+      partialCorrectionDiff = changes.diff;
+      await askQuestion("correcting", changes.diff !== diff
+        ? `${correction.question}\n\nClaude has already changed files during correction. Those changes will be kept while you answer.`
+        : correction.question, correctionAnswers);
+      const current = await readGitChanges(input.repository);
+      if (JSON.stringify({ diff: current.diff, entries: current.entries }) !== snapshot) {
+        throw new Error("The repository changed while waiting for a correction answer. Inspect the diff before continuing.");
+      }
+    }
     ensureActive();
+    correctionSummary = correction.message;
     if (correction.metrics) metrics.push({ provider: input.claude.id, ...correction.metrics });
     if (!realImplementation && correction.simulatedDiff) {
       simulatedDiff = `${simulatedDiff ?? ""}\n\n${correction.simulatedDiff}`.trim();
@@ -293,7 +368,13 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
       : "Mock workflow completed. All changes remain simulated in memory.");
   } catch (error) {
     if (realImplementation) {
-      try { workingTreeEntries = await readGitStatus(input.repository); } catch { /* Preserve the original failure. */ }
+      try {
+        const changes = await readGitChanges(input.repository);
+        workingTreeEntries = changes.entries;
+        diff = changes.diff;
+      } catch {
+        try { workingTreeEntries = await readGitStatus(input.repository); } catch { /* Preserve the original failure. */ }
+      }
     }
     if (timedOut || (error instanceof ProcessFailure && error.kind === "timed_out")) {
       if ((state as WorkflowState) !== "timed_out") emit("timed_out", "Workflow timed out.");

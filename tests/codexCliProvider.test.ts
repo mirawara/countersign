@@ -30,6 +30,7 @@ Options:
 
 const REVIEW = {
   summary: "Review complete.",
+  question: "",
   findings: [{
     severity: "Critical",
     file: "src/example.ts",
@@ -97,6 +98,8 @@ describe("CodexCliProvider", () => {
     let temporaryDirectory = "";
     const provider = new CodexCliProvider({
       executable: "codex-test",
+      model: "gpt-5.3-codex",
+      effort: "xhigh",
       timeoutMs: 90_000,
       gracePeriodMs: 750,
       runner: async (_executable, args, options) => {
@@ -123,6 +126,10 @@ describe("CodexCliProvider", () => {
     expect(executedArgs.slice(0, 3)).toEqual(["exec", "--sandbox", "read-only"]);
     expect(executedArgs).toContain("--ignore-user-config");
     expect(executedArgs).toContain("--ignore-rules");
+    expect(executedArgs.slice(executedArgs.indexOf("--model"), executedArgs.indexOf("--model") + 2))
+      .toEqual(["--model", "gpt-5.3-codex"]);
+    expect(executedArgs.slice(executedArgs.indexOf("--config"), executedArgs.indexOf("--config") + 2))
+      .toEqual(["--config", 'model_reasoning_effort="xhigh"']);
     expect(executedArgs).toContain("--ephemeral");
     expect(executedArgs).toContain("--json");
     expect(executedArgs.at(-1)).toBe("-");
@@ -138,7 +145,7 @@ describe("CodexCliProvider", () => {
       gracePeriodMs: 1_000,
       runner: async (_executable, args, _options) => {
         if (args[0] !== "exec") return result(0, "codex-cli 0.163.0");
-        await writeFile(optionValue(args, "--output-last-message"), JSON.stringify({ summary: "ok", findings: [] }));
+        await writeFile(optionValue(args, "--output-last-message"), JSON.stringify({ summary: "ok", question: "", findings: [] }));
         return { exitCode: 0, stdout: "not-json\n", stderr: "a diagnostic that must not be parsed" };
       },
     });

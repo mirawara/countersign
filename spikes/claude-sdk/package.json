@@ -1,0 +1,11 @@
+{
+  "private": true,
+  "type": "module",
+  "description": "Disposable Claude Agent SDK permission and isolation probe; excluded from the VSIX.",
+  "scripts": {
+    "probe": "node probe.mjs --live"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.306"
+  }
+}

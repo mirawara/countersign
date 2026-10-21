@@ -24,6 +24,16 @@ describe("configuration", () => {
     expect(() => validateConfiguration({ codexExecutable: "  " })).toThrow(/codexExecutable/);
   });
 
+  it("validates independent model and effort selections for Balanced", () => {
+    const config = validateConfiguration({ provider: "claude", codexProvider: "real",
+      claudeModel: "sonnet", claudeEffort: "high", codexModel: "gpt-5.3-codex", codexEffort: "xhigh" });
+    expect([config.claudeModel, config.claudeEffort, config.codexModel, config.codexEffort])
+      .toEqual(["sonnet", "high", "gpt-5.3-codex", "xhigh"]);
+    expect(() => validateConfiguration({ claudeEffort: "high" })).toThrow(/Choose a Claude model/);
+    expect(() => validateConfiguration({ codexModel: "model", codexEffort: "unsupported" })).toThrow(/codexEffort/);
+    expect(() => validateConfiguration({ claudeModel: "bad\nmodel" })).toThrow(/claudeModel/);
+  });
+
   it("rejects unsupported finding severities", () => {
     expect(() => validateConfiguration({ findingThreshold: "Urgent" })).toThrow(/findingThreshold/);
   });

@@ -40,7 +40,7 @@ describe("ClaudeCliProvider", () => {
         await writeFile(`${repository}/feature.ts`, "export const feature = true;\n");
         return result(0, JSON.stringify({
           is_error: false,
-          structured_output: { summary: "Implemented feature.", confirmed: [], fixed: [], remaining: [] },
+          structured_output: { summary: "Implemented feature.", question: "", confirmed: [], fixed: [], remaining: [] },
           total_cost_usd: 0.01,
           usage: { input_tokens: 10, output_tokens: 20 },
         }));
@@ -57,6 +57,45 @@ describe("ClaudeCliProvider", () => {
     expect(args[args.indexOf("--allowedTools") + 1]).toBe(config.claudeAllowedTools.join(","));
     expect(args).not.toContain("Bash");
     expect(args).not.toContain("--dangerously-skip-permissions");
+  });
+
+  it("passes the selected model and effort to the Claude implementation", async () => {
+    const selected = validateConfiguration({ provider: "claude", codexProvider: "real",
+      claudeModel: "sonnet", claudeEffort: "high" });
+    let args: string[] = [];
+    const provider = new ClaudeCliProvider({ config: selected, gateRecord, runner: async (_executable, invocation) => {
+      if (invocation[0] === "--version") return result(0, `${gateRecord.version}\n`);
+      args = invocation;
+      return result(0, JSON.stringify({ is_error: false,
+        structured_output: { summary: "Done.", question: "", confirmed: [], fixed: [], remaining: [] } }));
+    } });
+    const repository = await createCleanGitRepository();
+    repositories.push(repository);
+    await provider.execute(request(repository));
+    expect(args.slice(args.indexOf("--model"), args.indexOf("--model") + 2)).toEqual(["--model", "sonnet"]);
+    expect(args.slice(args.indexOf("--effort"), args.indexOf("--effort") + 2)).toEqual(["--effort", "high"]);
+  });
+
+  it("plans with read-only tools and carries user answers into the next proposal", async () => {
+    const repository = await createCleanGitRepository();
+    repositories.push(repository);
+    let invocation: { args: string[]; options: ProcessOptions } | undefined;
+    const provider = new ClaudeCliProvider({ config, gateRecord, runner: async (_executable, args, options) => {
+      if (args[0] === "--version") return result(0, `${gateRecord.version}\n`);
+      invocation = { args, options };
+      return result(0, JSON.stringify({ is_error: false,
+        structured_output: { plan: "1. Edit feature.ts. 2. Run tests.", questions: [] } }));
+    } });
+    const proposal = await provider.proposePlan(repository, "Add a feature",
+      [{ question: "Which API?", answer: "The local API" }], new AbortController().signal);
+    expect(proposal.plan).toContain("Edit feature.ts");
+    const args = invocation?.args ?? [];
+    expect(args.slice(args.indexOf("--tools"), args.indexOf("--tools") + 2))
+      .toEqual(["--tools", "Read,Glob,Grep"]);
+    expect(args.slice(args.indexOf("--permission-mode"), args.indexOf("--permission-mode") + 2))
+      .toEqual(["--permission-mode", "dontAsk"]);
+    expect(args).not.toContain("Edit");
+    expect(invocation?.options.stdin).toContain("Q: Which API?\nA: The local API");
   });
 });
 

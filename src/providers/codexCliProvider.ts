@@ -12,9 +12,10 @@ const REVIEW_SCHEMA = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
   type: "object",
   additionalProperties: false,
-  required: ["summary", "findings"],
+  required: ["summary", "question", "findings"],
   properties: {
     summary: { type: "string", maxLength: 4_000 },
+    question: { type: "string", maxLength: 2_000 },
     findings: {
       type: "array",
       maxItems: 100,
@@ -42,6 +43,8 @@ export type CodexCliRunner = (
 
 export interface CodexCliProviderOptions {
   executable: string;
+  model?: string;
+  effort?: string;
   timeoutMs: number;
   gracePeriodMs: number;
   runner?: CodexCliRunner;
@@ -139,6 +142,8 @@ export class CodexCliProvider implements AIProvider {
           "--ignore-user-config",
           "--ignore-rules",
           "--ephemeral",
+          ...(this.options.model ? ["--model", this.options.model] : []),
+          ...(this.options.effort ? ["--config", `model_reasoning_effort="${this.options.effort}"`] : []),
           "--json",
           "--output-schema", schemaPath,
           "--output-last-message", messagePath,
@@ -172,7 +177,8 @@ export class CodexCliProvider implements AIProvider {
       }
 
       const parsed = parseReviewResult(message);
-      return { changed: false, findings: parsed.findings, message: parsed.summary, ...(metrics ? { metrics } : {}) };
+      return { changed: false, findings: parsed.findings, message: parsed.summary,
+        question: parsed.question || undefined, ...(metrics ? { metrics } : {}) };
     } finally {
       await rm(temporaryDirectory, { recursive: true, force: true });
     }
@@ -220,10 +226,12 @@ function buildReviewPrompt(request: AgentRequest): string {
     "Do not edit files, run commands that mutate state or access the network, or attempt to correct findings.",
     `Report only actionable findings caused by this ${simulated ? "simulated" : "actual"} change. Do not report unrelated pre-existing issues.`,
     "For each finding, use a changed file path and line number, cite concrete evidence, and choose a severity.",
+    "If a user decision is necessary to complete the review, return one precise question and an empty findings array. Otherwise set question to an empty string.",
     "Return the required structured JSON with a concise summary and findings array.",
     "",
     "Task:",
     request.task,
+    request.clarifications?.length ? `User answers:\n${JSON.stringify(request.clarifications)}` : "",
     "",
     simulated ? "Simulated diff (it exists only in memory and is not applied to the repository):" : "Actual Git diff:",
     request.diff ?? request.simulatedDiff ?? "(no diff supplied)",
@@ -257,7 +265,7 @@ function finiteNonnegative(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
-function parseReviewResult(text: string): { summary: string; findings: Finding[] } {
+function parseReviewResult(text: string): { summary: string; question: string; findings: Finding[] } {
   let value: unknown;
   try {
     value = JSON.parse(text);
@@ -265,8 +273,9 @@ function parseReviewResult(text: string): { summary: string; findings: Finding[]
     throw new CodexProviderError("invalid_output", "Codex CLI returned a malformed structured review result.");
   }
   if (!isRecord(value)
-    || !hasOnlyKeys(value, ["summary", "findings"])
+    || !hasOnlyKeys(value, ["summary", "question", "findings"])
     || typeof value.summary !== "string" || value.summary.length > 4_000
+    || typeof value.question !== "string" || value.question.length > 2_000
     || !Array.isArray(value.findings)) {
     throw new CodexProviderError("invalid_output", "Codex CLI review result did not match the required schema.");
   }
@@ -293,7 +302,7 @@ function parseReviewResult(text: string): { summary: string; findings: Finding[]
   if (findings.length > 100) {
     throw new CodexProviderError("invalid_output", "Codex CLI returned too many review findings.");
   }
-  return { summary: value.summary, findings };
+  return { summary: value.summary, question: value.question, findings };
 }
 
 function mapProcessFailure(error: unknown): CodexProviderError {

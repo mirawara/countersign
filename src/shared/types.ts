@@ -6,6 +6,7 @@ export type WorkflowState =
   | "idle"
   | "preflight"
   | "awaiting_confirmation"
+  | "awaiting_input"
   | "implementing"
   | "running_checks"
   | "reviewing"
@@ -26,7 +27,7 @@ export type WorkflowState =
 
 export type WorkflowPhase = Extract<
   WorkflowState,
-  "preflight" | "awaiting_confirmation" | "implementing" | "running_checks" | "reviewing" | "correcting"
+  "preflight" | "awaiting_confirmation" | "awaiting_input" | "implementing" | "running_checks" | "reviewing" | "correcting"
 >;
 
 export interface ProviderStatus {
@@ -51,6 +52,7 @@ export interface AgentRequest {
   diff?: string;
   simulatedDiff?: string;
   findings?: Finding[];
+  clarifications?: { question: string; answer: string }[];
   signal: AbortSignal;
 }
 
@@ -65,6 +67,7 @@ export interface AgentResult {
     remaining: Finding[];
   };
   message: string;
+  question?: string;
   metrics?: { estimatedCostUsd?: number; inputTokens?: number; outputTokens?: number };
 }
 
@@ -110,6 +113,13 @@ export interface WorkflowResult {
   checks: CheckResult[];
   workingTreeEntries: string[];
   message: string;
+  plan?: string;
+  implementationSummary?: string;
+  correctionSummary?: string;
+  clarifications?: { phase: string; question: string; answer: string }[];
+  selectedModels?: { claudeModel: string; claudeEffort: string; codexModel: string; codexEffort: string };
+  configuredChecks?: LocalCheck[];
+  events?: WorkflowEvent[];
   mock: boolean;
   implementationProvider: "mock" | "claude";
   reviewProvider: "mock" | "real";

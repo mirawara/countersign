@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { summarizeWorkflow } from "../src/orchestrator/report";
+import { detailedWorkflowReport, summarizeWorkflow } from "../src/orchestrator/report";
 import { WorkflowResult } from "../src/shared/types";
 
 describe("workflow summary privacy", () => {
@@ -18,5 +18,14 @@ describe("workflow summary privacy", () => {
     for (const secret of ["SECRET_TASK_PROMPT", "SECRET_DIFF_CONTENT", "SECRET_REVIEW_SUMMARY", "SECRET_EVIDENCE", "SECRET_CHECK_OUTPUT", "SECRET_PROVIDER_MESSAGE"]) {
       expect(summary).not.toContain(secret);
     }
+    const inChat = detailedWorkflowReport({ ...result, plan: "Approved plan", implementationSummary: "Edited src/a.ts",
+      clarifications: [{ phase: "planning", question: "Which API?", answer: "Local" }] });
+    expect(inChat).toContain("Approved plan");
+    expect(inChat).toContain("SECRET_TASK_PROMPT");
+    expect(inChat).toContain("SECRET_REVIEW_SUMMARY");
+    expect(inChat).toContain("SECRET_EVIDENCE");
+    expect(inChat).toContain("SECRET_CHECK_OUTPUT");
+    expect(inChat).toContain("Which API?");
+    expect(inChat).not.toContain("SECRET_DIFF_CONTENT");
   });
 });

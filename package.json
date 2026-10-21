@@ -1,13 +1,38 @@
 {
   "name": "countersign",
   "displayName": "Countersign",
-  "description": "A local VS Code workflow for bounded Claude implementation and Codex review, with mock mode.",
+  "icon": "media/countersign-icon-256.png",
+  "galleryBanner": {
+    "color": "#1F1D1A",
+    "theme": "dark"
+  },
+  "description": "A local VS Code sidebar chat for Claude and Codex, with the bounded Claude implementation and Codex review workflow.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mirawara/countersign.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mirawara/countersign/issues"
+  },
+  "homepage": "https://github.com/mirawara/countersign#readme",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "codex",
+    "ai",
+    "code-review",
+    "chat",
+    "agent"
+  ],
   "version": "0.1.0",
-  "publisher": "local",
+  "publisher": "mirawara",
   "engines": {
-    "vscode": "^1.95.0"
+    "vscode": "^1.106.0"
   },
   "categories": [
+    "AI",
+    "Chat",
     "Other"
   ],
   "activationEvents": [
@@ -18,10 +43,33 @@
     "onCommand:countersign.verifyClaudeGate",
     "onCommand:countersign.showDiff",
     "onCommand:countersign.showReview",
-    "onCommand:countersign.showCheckResults"
+    "onCommand:countersign.showCheckResults",
+    "onView:countersign.chat",
+    "onCommand:countersign.openChat",
+    "onCommand:countersign.newChat",
+    "onCommand:countersign.clearChatHistory",
+    "onCommand:countersign.verifyClaudeChatGate"
   ],
   "main": "./dist/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "secondarySidebar": [
+        {
+          "id": "countersign",
+          "title": "Countersign",
+          "icon": "media/countersign-mark.svg"
+        }
+      ]
+    },
+    "views": {
+      "countersign": [
+        {
+          "id": "countersign.chat",
+          "name": "Chat",
+          "type": "webview"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "countersign.startWorkflow",
@@ -54,6 +102,22 @@
       {
         "command": "countersign.showCheckResults",
         "title": "Countersign: Show Check Results"
+      },
+      {
+        "command": "countersign.openChat",
+        "title": "Countersign: Open Chat"
+      },
+      {
+        "command": "countersign.newChat",
+        "title": "Countersign: New Chat"
+      },
+      {
+        "command": "countersign.clearChatHistory",
+        "title": "Countersign: Clear Chat History"
+      },
+      {
+        "command": "countersign.verifyClaudeChatGate",
+        "title": "Countersign: Verify Claude Chat Isolation"
       }
     ],
     "configuration": {
@@ -190,7 +254,7 @@
     "compile": "tsc -p .",
     "watch": "tsc -watch -p .",
     "vscode:prepublish": "npm run compile",
-    "package": "npm run compile",
+    "package": "vsce package --no-rewrite-relative-links --allow-missing-repository",
     "lint": "eslint src tests",
     "test": "vitest run && npm run typecheck:tests",
     "typecheck:tests": "tsc -p tsconfig.tests.json --noEmit",
@@ -202,9 +266,13 @@
     "@types/node": "^22.0.0",
     "@types/vscode": "^1.95.0",
     "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "4.0.0",
     "eslint": "^10.13.0",
     "typescript": "^5.7.0",
     "typescript-eslint": "^8.71.2",
     "vitest": "^4.1.12"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.306"
   }
 }

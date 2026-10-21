@@ -8,14 +8,31 @@ const MAX_OUTPUT_BYTES = 1_048_576;
 const RESPONSE_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["summary", "confirmed", "fixed", "remaining"],
+  required: ["summary", "question", "confirmed", "fixed", "remaining"],
   properties: {
-    summary: { type: "string", minLength: 1, maxLength: 2_000 },
+    summary: { type: "string", minLength: 1, maxLength: 5_000 },
+    question: { type: "string", maxLength: 2_000 },
     confirmed: { type: "array", maxItems: 10, items: { type: "string" } },
     fixed: { type: "array", maxItems: 10, items: { type: "string" } },
     remaining: { type: "array", maxItems: 10, items: { type: "string" } },
   },
 } as const;
+
+const PLAN_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["plan", "questions"],
+  properties: {
+    plan: { type: "string", maxLength: 12_000 },
+    questions: { type: "array", maxItems: 3, items: { type: "string", minLength: 1, maxLength: 2_000 } },
+  },
+} as const;
+
+export interface ProposedPlan {
+  plan: string;
+  questions: string[];
+  metrics?: AgentResult["metrics"];
+}
 
 export type ClaudeCliRunner = (executable: string, args: string[], options: ProcessOptions) => Promise<ProcessResult>;
 export type ClaudeProviderErrorKind = "unavailable" | "capability_missing" | "gate_missing" | "authentication" | "quota" | "permissions" | "timed_out" | "cancelled" | "invalid_output" | "execution";
@@ -77,6 +94,8 @@ export class ClaudeCliProvider implements AIProvider {
       "--permission-mode", "default", "--no-session-persistence",
       "--tools", config.claudeAllowedTools.join(","),
       "--allowedTools", config.claudeAllowedTools.join(","),
+      ...(config.claudeModel ? ["--model", config.claudeModel] : []),
+      ...(config.claudeEffort ? ["--effort", config.claudeEffort] : []),
     ];
     let result: ProcessResult;
     try {
@@ -107,8 +126,53 @@ export class ClaudeCliProvider implements AIProvider {
         remaining: parsed.remaining,
       } : undefined,
       message: parsed.summary,
+      question: parsed.question || undefined,
       metrics: parsed.metrics,
     };
+  }
+
+  async proposePlan(repository: string, task: string, clarifications: { question: string; answer: string }[],
+    signal: AbortSignal): Promise<ProposedPlan> {
+    if (signal.aborted) throw new ClaudeProviderError("cancelled", "Planning was cancelled.");
+    const version = await this.readVersion();
+    if (!version || this.options.gateRecord?.version !== version || this.options.gateRecord.passed !== true) {
+      throw new ClaudeProviderError("gate_missing", "Claude CLI version changed or the settings-source gate has not passed.");
+    }
+    const { config } = this.options;
+    const readTools = "Read,Glob,Grep";
+    let result: ProcessResult;
+    try {
+      result = await this.run(config.claudeExecutable, [
+        "--print", "--output-format", "json", "--json-schema", JSON.stringify(PLAN_SCHEMA),
+        "--max-budget-usd", String(config.budgetGuardUsd),
+        "--setting-sources", "", "--strict-mcp-config", "--disable-slash-commands",
+        "--permission-mode", "dontAsk", "--no-session-persistence",
+        "--tools", readTools, "--allowedTools", readTools,
+        ...(config.claudeModel ? ["--model", config.claudeModel] : []),
+        ...(config.claudeEffort ? ["--effort", config.claudeEffort] : []),
+      ], {
+        cwd: repository, timeoutMs: config.providerTimeoutMinutes * 60_000,
+        gracePeriodMs: config.terminationGracePeriodMs, maxOutputBytes: MAX_OUTPUT_BYTES,
+        signal,
+        stdin: [
+          "Plan this task using only Read, Glob and Grep. Do not edit files, run commands, access the network or use MCP.",
+          "If a missing user decision materially changes the implementation, ask up to three precise questions and leave plan empty.",
+          "Otherwise return a concrete plan with files, steps and checks, and an empty questions array. Do not claim a review was performed.",
+          `Task:\n${task}`,
+          clarifications.length ? `User answers:\n${clarifications.map(({ question, answer }) => `Q: ${question}\nA: ${answer}`).join("\n")}` : "",
+        ].filter(Boolean).join("\n\n"),
+      });
+    } catch (error) { throw mapProcessFailure(error); }
+    if (result.exitCode !== 0) throw classifyFailure(result.stderr, result.exitCode);
+    const outer = parseEnvelope(result.stdout);
+    const value = outer.structured_output;
+    if (!isRecord(value) || typeof value.plan !== "string" || value.plan.length > 12_000 ||
+      !Array.isArray(value.questions) || value.questions.length > 3 ||
+      !value.questions.every((item) => typeof item === "string" && item.trim().length > 0 && item.length <= 2_000) ||
+      (value.questions.length === 0 && !value.plan.trim())) {
+      throw new ClaudeProviderError("invalid_output", "Claude CLI did not return a valid plan or clarification questions.");
+    }
+    return { plan: value.plan, questions: value.questions, metrics: envelopeMetrics(outer) };
   }
 
   async cancel(_taskId: string): Promise<void> {
@@ -136,29 +200,36 @@ function buildPrompt(request: AgentRequest): string {
     "Return structured JSON matching the schema. The orchestrator computes the actual Git diff after you finish.",
   ];
   if (request.mode === "implement") {
-    return [...instructions, "Implement the following task:", request.task, "Set confirmed, fixed and remaining to empty arrays."].join("\n\n");
+    return [...instructions,
+      "If a user decision is necessary before proceeding, ask one precise question in question, leave all finding arrays empty and do not edit files. Otherwise set question to an empty string and implement the task.",
+      "In summary, report each changed file, what you changed, any checks you actually ran, and remaining limitations. Do not claim checks that you did not run.",
+      "Implement the following task:", request.task,
+      request.clarifications?.length ? `User answers:\n${JSON.stringify(request.clarifications)}` : "",
+      request.diff ? `Changes already made during this workflow (continue from them; do not discard them):\n${request.diff}` : "",
+      "Set confirmed, fixed and remaining to empty arrays."].filter(Boolean).join("\n\n");
   }
   const findings = (request.findings ?? []).map((finding, index) => ({ id: `f${index}`, ...finding }));
   return [
     ...instructions,
+    "If a user decision is necessary before changing anything, ask one precise question in question, leave all finding arrays empty and do not edit files. Otherwise set question to an empty string.",
     "Re-evaluate each candidate finding against the actual code and diff. Correct only findings you confirm. Do not change code for unconfirmed findings.",
+    "In summary, explain each correction and any finding left open. Do not claim checks or review turns that did not run.",
     "In confirmed, fixed and remaining return finding IDs. fixed and remaining must be disjoint subsets of confirmed. Include every confirmed ID in exactly one of fixed or remaining.",
     "Task:", request.task,
+    request.clarifications?.length ? `User answers:\n${JSON.stringify(request.clarifications)}` : "",
     "Current diff:", request.diff ?? "",
     "Candidate findings:", JSON.stringify(findings),
   ].join("\n\n");
 }
 
 function parseResponse(stdout: string, candidates: Finding[]): {
-  summary: string; confirmed: Finding[]; fixed: Finding[]; remaining: Finding[];
+  summary: string; question: string; confirmed: Finding[]; fixed: Finding[]; remaining: Finding[];
   metrics?: AgentResult["metrics"];
 } {
-  let outer: unknown;
-  try { outer = JSON.parse(stdout); } catch { throw new ClaudeProviderError("invalid_output", "Claude CLI returned malformed JSON."); }
-  if (!isRecord(outer)) throw new ClaudeProviderError("invalid_output", "Claude CLI returned an invalid result envelope.");
-  if (outer.is_error === true) throw classifyFailure(String(outer.result ?? ""), 1);
+  const outer = parseEnvelope(stdout);
   const value = outer.structured_output;
-  if (!isRecord(value) || typeof value.summary !== "string" || value.summary.trim().length === 0 || value.summary.length > 2_000) {
+  if (!isRecord(value) || typeof value.summary !== "string" || value.summary.trim().length === 0 || value.summary.length > 5_000 ||
+    typeof value.question !== "string" || value.question.length > 2_000) {
     throw new ClaudeProviderError("invalid_output", "Claude CLI did not return a valid structured response.");
   }
   const mapIds = (key: string): Finding[] => {
@@ -181,13 +252,21 @@ function parseResponse(stdout: string, candidates: Finding[]): {
     || fixed.some((finding) => remaining.includes(finding)) || fixed.length + remaining.length !== confirmed.length) {
     throw new ClaudeProviderError("invalid_output", "Claude CLI returned inconsistent correction findings.");
   }
+  return { summary: value.summary, question: value.question, confirmed, fixed, remaining, metrics: envelopeMetrics(outer) };
+}
+
+function parseEnvelope(stdout: string): Record<string, unknown> {
+  let outer: unknown;
+  try { outer = JSON.parse(stdout); } catch { throw new ClaudeProviderError("invalid_output", "Claude CLI returned malformed JSON."); }
+  if (!isRecord(outer)) throw new ClaudeProviderError("invalid_output", "Claude CLI returned an invalid result envelope.");
+  if (outer.is_error === true) throw classifyFailure(String(outer.result ?? ""), 1);
+  return outer;
+}
+
+function envelopeMetrics(outer: Record<string, unknown>): AgentResult["metrics"] {
   const usage = isRecord(outer.usage) ? outer.usage : {};
-  const metrics = {
-    estimatedCostUsd: finiteNonnegative(outer.total_cost_usd),
-    inputTokens: finiteNonnegative(usage.input_tokens),
-    outputTokens: finiteNonnegative(usage.output_tokens),
-  };
-  return { summary: value.summary, confirmed, fixed, remaining, metrics };
+  return { estimatedCostUsd: finiteNonnegative(outer.total_cost_usd),
+    inputTokens: finiteNonnegative(usage.input_tokens), outputTokens: finiteNonnegative(usage.output_tokens) };
 }
 
 function finiteNonnegative(value: unknown): number | undefined {

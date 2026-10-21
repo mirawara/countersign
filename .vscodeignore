@@ -2,6 +2,8 @@
 .vscode-test/**
 src/**
 tests/**
+scripts/**
+spikes/**
 .integration-dist/**
 .test-dist/**
 tsconfig.json
@@ -9,4 +11,9 @@ tsconfig.tests.json
 tsconfig.integration.json
 vitest.config.*
 *.ts
-node_modules/**
+*.vsix
+eslint.config.mjs
+.gitignore
+node_modules/@anthropic-ai/claude-agent-sdk-*/**
+internal/**
+.github/**

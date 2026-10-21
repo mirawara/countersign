@@ -4,11 +4,19 @@ import { FindingSeverity } from "../shared/types";
 export type ImplementationProvider = "mock" | "claude";
 export type CodexProviderMode = "mock" | "real";
 
+export type WorkflowModelSelection = Pick<OrchestratorConfig,
+  "claudeModel" | "claudeEffort" | "codexModel" | "codexEffort">;
+export type WorkflowProviderSelection = Pick<OrchestratorConfig, "provider" | "codexProvider">;
+
 export interface OrchestratorConfig {
   provider: ImplementationProvider;
   claudeExecutable: string;
+  claudeModel: string;
+  claudeEffort: string;
   codexProvider: CodexProviderMode;
   codexExecutable: string;
+  codexModel: string;
+  codexEffort: string;
   mockScenario: MockScenario;
   claudeAllowedTools: string[];
   localChecks: LocalCheck[];
@@ -48,6 +56,14 @@ export function validateConfiguration(raw: RawConfiguration): OrchestratorConfig
     throw new Error("countersign.claudeExecutable must be a non-empty executable name or path.");
   }
 
+  const claudeModel = modelSelection(raw.claudeModel, "claudeModel");
+  const claudeEffort = effortSelection(raw.claudeEffort, "claudeEffort", ["low", "medium", "high", "max"]);
+  const codexModel = modelSelection(raw.codexModel, "codexModel");
+  const codexEffort = effortSelection(raw.codexEffort, "codexEffort",
+    ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
+  if (claudeEffort && !claudeModel) throw new Error("Choose a Claude model before selecting its effort.");
+  if (codexEffort && !codexModel) throw new Error("Choose a Codex model before selecting its reasoning effort.");
+
   const scenario = raw.mockScenario ?? "clean";
   if (scenario !== "clean" && scenario !== "finding" && scenario !== "noChanges" && scenario !== "error") {
     throw new Error("countersign.mockScenario has an unsupported value.");
@@ -83,8 +99,12 @@ export function validateConfiguration(raw: RawConfiguration): OrchestratorConfig
   return {
     provider,
     claudeExecutable,
+    claudeModel,
+    claudeEffort,
     codexProvider,
     codexExecutable,
+    codexModel,
+    codexEffort,
     mockScenario: scenario,
     claudeAllowedTools: tools,
     localChecks,
@@ -95,6 +115,23 @@ export function validateConfiguration(raw: RawConfiguration): OrchestratorConfig
     findingThreshold,
     terminationGracePeriodMs: boundedNumber(raw.terminationGracePeriodMs, 1000, 100, 10_000),
   };
+}
+
+function modelSelection(value: unknown, key: string): string {
+  if (value === undefined) return "";
+  if (typeof value !== "string" || (value !== "" && (value.length > 100 || /\s/.test(value) ||
+    [...value].some((character) => character.charCodeAt(0) < 32)))) {
+    throw new Error(`countersign.${key} must be a model from the active provider catalog.`);
+  }
+  return value;
+}
+
+function effortSelection(value: unknown, key: string, levels: string[]): string {
+  if (value === undefined) return "";
+  if (typeof value !== "string" || (value !== "" && !levels.includes(value))) {
+    throw new Error(`countersign.${key} has an unsupported effort level.`);
+  }
+  return value;
 }
 
 export function isFindingSeverity(value: unknown): value is FindingSeverity {

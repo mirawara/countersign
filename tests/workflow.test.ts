@@ -154,6 +154,69 @@ describe("mock BALANCED workflow", () => {
     expect(await readFile(counter, "utf8")).toBe("2");
   });
 
+  it("pauses for an implementation question and resumes with the answer before editing", async () => {
+    const repository = await createCleanGitRepository();
+    repositories.push(repository);
+    const events: WorkflowState[] = [];
+    let calls = 0;
+    const claude: AIProvider = {
+      id: "questioning-claude",
+      checkAvailability: async () => ({ available: true }),
+      execute: async (request) => {
+        calls += 1;
+        if (calls === 1) return { changed: false, findings: [], message: "Need a decision.", question: "Which format?" };
+        expect(request.clarifications).toEqual([{ question: "Which format?", answer: "JSON" }]);
+        await writeFile(join(repository, "feature.ts"), "export const format = 'JSON';\n");
+        return { changed: true, changedPaths: ["feature.ts"], findings: [], message: "Implemented JSON format." };
+      },
+      cancel: async () => undefined,
+    };
+    const result = await runMockWorkflow({ repository, task: "Add a format", plan: "Use the selected format.",
+      config: validateConfiguration({ provider: "claude", codexProvider: "real" }), claude,
+      codex: new CapturingReviewProvider(() => undefined), signal: new AbortController().signal,
+      onEvent: (event) => events.push(event.state),
+      askQuestion: async (phase, question) => {
+        expect(phase).toBe("implementing");
+        expect(question).toBe("Which format?");
+        await expect(readFile(join(repository, "feature.ts"), "utf8")).rejects.toThrow();
+        return "JSON";
+      },
+    });
+    expect(result.state).toBe("completed_clean");
+    expect(events).toContain("awaiting_input");
+    expect(result.implementationSummary).toBe("Implemented JSON format.");
+    expect(result.clarifications).toEqual([{ phase: "implementing", question: "Which format?", answer: "JSON" }]);
+  });
+
+  it("keeps partial edits across a question and passes their diff to the next Claude turn", async () => {
+    const repository = await createCleanGitRepository();
+    repositories.push(repository);
+    let calls = 0;
+    const claude: AIProvider = {
+      id: "partial-edit-claude",
+      checkAvailability: async () => ({ available: true }),
+      execute: async (request) => {
+        calls += 1;
+        if (calls === 1) {
+          await writeFile(join(repository, "feature.ts"), "export const state = 'partial';\n");
+          return { changed: true, findings: [], message: "Started implementation.", question: "Which suffix?" };
+        }
+        expect(request.diff).toContain("partial");
+        expect(request.clarifications?.[0].answer).toBe("complete");
+        await writeFile(join(repository, "feature.ts"), "export const state = 'complete';\n");
+        return { changed: true, findings: [], message: "Completed implementation." };
+      },
+      cancel: async () => undefined,
+    };
+    const result = await runMockWorkflow({ repository, task: "Implement a feature",
+      config: validateConfiguration({ provider: "claude", codexProvider: "real" }), claude,
+      codex: new CapturingReviewProvider(() => undefined), signal: new AbortController().signal,
+      onEvent: () => undefined, askQuestion: async () => "complete" });
+    expect(result.state).toBe("completed_clean");
+    expect(result.diff).toContain("complete");
+    expect(calls).toBe(2);
+  });
+
   it("filters runtime finding severities against the configured threshold", () => {
     const findings = [
       finding({ severity: "Critical" }),

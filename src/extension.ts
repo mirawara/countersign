@@ -1,5 +1,8 @@
 import * as vscode from "vscode";
-import { validateConfiguration } from "./configuration/config";
+import { ChatController } from "./chat/controller";
+import { OrchestratorConfig, validateConfiguration } from "./configuration/config";
+import { inspectClaude } from "./chat/claudeAdapter";
+import { inspectCodex } from "./chat/codexAdapter";
 import { preflightGit, GitPreflightError } from "./context/gitPreflight";
 import { runWorkflow } from "./orchestrator/workflow";
 import { summarizeWorkflow } from "./orchestrator/report";
@@ -9,8 +12,10 @@ import { verifyClaudeSettingsGate } from "./providers/claudeGate";
 import { clearClaudeGateRecord, loadClaudeGateRecord, saveClaudeGateRecord } from "./providers/claudeGateStore";
 import { MockProvider } from "./providers/mockProvider";
 import { WorkflowEvent, WorkflowResult, WorkflowState } from "./shared/types";
+import { acquireRepositoryLock } from "./shared/repositoryLock";
+import { WorkflowStartRequest } from "./shared/workflowInteraction";
 
-class ExtensionRuntime {
+export class ExtensionRuntime {
   private readonly output = vscode.window.createOutputChannel("Countersign");
   private currentState: WorkflowState = "idle";
   private activeController: AbortController | undefined;
@@ -36,13 +41,22 @@ class ExtensionRuntime {
     this.activeController?.abort();
   }
 
-  private async startWorkflow(): Promise<void> {
+  startChatWorkflow(request: WorkflowStartRequest): Promise<WorkflowResult | undefined> {
+    return this.startWorkflow(request);
+  }
+
+  cancelChatWorkflow(): void {
+    this.cancelWorkflow();
+  }
+
+  private async startWorkflow(request?: WorkflowStartRequest): Promise<WorkflowResult | undefined> {
     if (this.activeController) {
       void vscode.window.showInformationMessage("A workflow is already running.");
       return;
     }
     const controller = new AbortController();
     this.activeController = controller;
+    let releaseLock: (() => void) | undefined;
     try {
       this.currentState = "preflight";
 
@@ -64,10 +78,16 @@ class ExtensionRuntime {
         void vscode.window.showErrorMessage("Open exactly one Git repository folder as the VS Code workspace.");
         return;
       }
+      try { releaseLock = acquireRepositoryLock(folders[0].uri.fsPath); }
+      catch (error) {
+        this.currentState = "blocked_provider";
+        void vscode.window.showWarningMessage(errorMessage(error));
+        return;
+      }
 
       let config;
       try {
-        config = validateConfiguration(readConfiguration());
+        config = validateConfiguration({ ...readConfiguration(), ...request?.providers, ...request?.selection });
       } catch (error) {
         this.currentState = "failed";
         void vscode.window.showErrorMessage(errorMessage(error));
@@ -109,14 +129,26 @@ class ExtensionRuntime {
         return;
       }
 
-      const task = await vscode.window.showInputBox({
+      try {
+        await validateSelectedModels(config, repository, Boolean(request?.interaction));
+      } catch (error) {
+        this.currentState = "blocked_provider";
+        void vscode.window.showWarningMessage(errorMessage(error));
+        return;
+      }
+      if (controller.signal.aborted) {
+        this.currentState = "cancelled";
+        return;
+      }
+
+      const task = request ? request.task : await vscode.window.showInputBox({
         title: "Countersign",
         prompt: "Describe the development task",
         placeHolder: "What should change?",
         ignoreFocusOut: true,
         validateInput: (value) => value.trim().length === 0 ? "Enter a task description." : undefined,
       });
-      if (task === undefined) {
+      if (task === undefined || !task.trim()) {
         this.currentState = "cancelled";
         return;
       }
@@ -125,6 +157,29 @@ class ExtensionRuntime {
         return;
       }
 
+      let plan: string | undefined;
+      const clarifications: NonNullable<WorkflowResult["clarifications"]> = [];
+      const planningMetrics: WorkflowResult["metrics"] = [];
+      if (request?.interaction && config.provider === "claude") {
+        this.currentState = "awaiting_input";
+        const planner = new ClaudeCliProvider({ config, gateRecord: await loadClaudeGateRecord() });
+        for (let round = 0; round < 4; round++) {
+          await preflightGit(repository);
+          const proposal = await planner.proposePlan(repository, task.trim(),
+            clarifications.map(({ question, answer }) => ({ question, answer })), controller.signal);
+          if (proposal.metrics) planningMetrics.push({ provider: "claude-planning", ...proposal.metrics });
+          await preflightGit(repository);
+          if (controller.signal.aborted) { this.currentState = "cancelled"; return; }
+          if (proposal.questions.length === 0) { plan = proposal.plan.trim(); break; }
+          for (const question of proposal.questions) {
+            if (clarifications.length >= 3) throw new Error("Planning stopped after three clarification questions. No files were changed.");
+            const answer = await request.interaction.askQuestion("planning", question, controller.signal);
+            if (controller.signal.aborted || !answer?.trim()) { this.currentState = "cancelled"; return; }
+            clarifications.push({ phase: "planning", question, answer: answer.trim().slice(0, 20_000) });
+          }
+        }
+        if (!plan) throw new Error("Claude did not produce a complete plan after the clarification limit. No files were changed.");
+      }
       this.currentState = "awaiting_confirmation";
       const checksSummary = config.localChecks.length === 0
         ? "none"
@@ -132,6 +187,8 @@ class ExtensionRuntime {
       const details = [
         `Repository: ${repository}`,
         `Task: ${task.trim()}`,
+        `Claude model: ${config.provider === "claude" ? config.claudeModel || "CLI default" : "Mock"}; effort: ${config.provider === "claude" ? config.claudeEffort || "CLI default" : "Mock"}.`,
+        `Codex model: ${config.codexProvider === "real" ? config.codexModel || "CLI default" : "Mock"}; reasoning effort: ${config.codexProvider === "real" ? config.codexEffort || "CLI default" : "Mock"}.`,
         `Claude tools (${config.provider === "mock" ? "mock uses none" : "pre-authorized for this task"}): ${config.claudeAllowedTools.join(", ") || "none"}. Bash and MCP are excluded.`,
         config.provider === "mock" ? `Mock scenario: ${config.mockScenario}` : "No mock scenario is used in the real workflow.",
         `Configured local checks (these will run):\n${checksSummary}`,
@@ -145,12 +202,12 @@ class ExtensionRuntime {
           : "Review: mock Codex; no AI provider request is made.",
       ].join("\n\n");
       const confirmationLabel = config.provider === "claude" ? "Start Real Workflow" : config.codexProvider === "real" ? "Start Mock + Codex Review" : "Start Mock Workflow";
-      const confirm = await vscode.window.showWarningMessage(
-        config.provider === "claude" ? "Start Claude implementation and Codex review?" : config.codexProvider === "real" ? "Send a review request to Codex?" : "Start the mock workflow?",
-        { modal: true, detail: details },
-        confirmationLabel,
-      );
-      if (confirm !== confirmationLabel) {
+      const confirmed = request?.interaction
+        ? await request.interaction.confirmPlan(plan ?? "No AI plan was requested for this provider pair.", details, controller.signal)
+        : await vscode.window.showWarningMessage(
+          config.provider === "claude" ? "Start Claude implementation and Codex review?" : config.codexProvider === "real" ? "Send a review request to Codex?" : "Start the mock workflow?",
+          { modal: true, detail: details }, confirmationLabel) === confirmationLabel;
+      if (!confirmed) {
         this.currentState = "cancelled";
         return;
       }
@@ -174,7 +231,7 @@ class ExtensionRuntime {
 
       let currentConfig;
       try {
-        currentConfig = validateConfiguration(readConfiguration());
+        currentConfig = validateConfiguration({ ...readConfiguration(), ...request?.providers, ...request?.selection });
       } catch (error) {
         this.currentState = "failed";
         void vscode.window.showErrorMessage(errorMessage(error));
@@ -204,10 +261,11 @@ class ExtensionRuntime {
         return;
       }
 
-      this.output.show(true);
+      if (!request?.interaction) this.output.show(true);
       this.output.appendLine("--- Countersign workflow ---");
       this.output.appendLine(`Repository: ${repository}`);
       this.output.appendLine(`Mode: ${config.provider} implementation + ${config.codexProvider} review.`);
+      this.output.appendLine(`Claude model/effort: ${config.claudeModel || "CLI default"}/${config.claudeEffort || "CLI default"}; Codex model/effort: ${config.codexModel || "CLI default"}/${config.codexEffort || "CLI default"}.`);
 
       try {
         const claude = config.provider === "claude"
@@ -216,6 +274,8 @@ class ExtensionRuntime {
         const codex = config.codexProvider === "real"
           ? new CodexCliProvider({
               executable: config.codexExecutable,
+              model: config.codexModel,
+              effort: config.codexEffort,
               timeoutMs: config.providerTimeoutMinutes * 60_000,
               gracePeriodMs: config.terminationGracePeriodMs,
             })
@@ -223,24 +283,33 @@ class ExtensionRuntime {
         const result = await runWorkflow({
           repository,
           task: task.trim(),
+          plan,
+          clarifications,
+          selectedModels: { claudeModel: config.claudeModel, claudeEffort: config.claudeEffort,
+            codexModel: config.codexModel, codexEffort: config.codexEffort },
+          initialMetrics: planningMetrics,
           config,
           claude,
           codex,
           signal: controller.signal,
-          onEvent: (event) => this.onEvent(event),
+          askQuestion: request?.interaction?.askQuestion,
+          onEvent: (event) => { this.onEvent(event); request?.onEvent?.(event); },
         });
         this.currentState = result.state;
         this.latestResult = result;
         this.writeSummary(result);
-        void vscode.window.showInformationMessage(`Countersign: ${result.state}. Open the output or result commands for details.`);
+        if (!request?.interaction) void vscode.window.showInformationMessage(`Countersign: ${result.state}. Open the output or result commands for details.`);
+        return result;
       } catch (error) {
         this.currentState = "failed";
         this.output.appendLine(`Workflow failed: ${errorMessage(error)}`);
         void vscode.window.showErrorMessage(`Workflow failed: ${errorMessage(error)}`);
       }
     } finally {
+      releaseLock?.();
       if (this.activeController === controller) this.activeController = undefined;
     }
+    return undefined;
   }
 
   private cancelWorkflow(): void {
@@ -365,6 +434,23 @@ class ExtensionRuntime {
   }
 }
 
+async function validateSelectedModels(config: OrchestratorConfig, repository: string, requireSubscription = false): Promise<void> {
+  if (config.provider === "claude" && (config.claudeModel || requireSubscription)) {
+    const info = await inspectClaude(config.claudeExecutable, repository);
+    const selected = info.models.find((entry) => entry.value === config.claudeModel);
+    if (config.claudeModel && (!selected || (config.claudeEffort && !selected.effortLevels.includes(config.claudeEffort)))) {
+      throw new Error("The selected Claude model or effort is unavailable for the active account.");
+    }
+  }
+  if (config.codexProvider === "real" && (config.codexModel || requireSubscription)) {
+    const info = await inspectCodex(config.codexExecutable, repository);
+    const selected = info.models.find((entry) => entry.value === config.codexModel);
+    if (config.codexModel && (!selected || (config.codexEffort && !selected.effortLevels.includes(config.codexEffort)))) {
+      throw new Error("The selected Codex model or reasoning effort is unavailable for the active account.");
+    }
+  }
+}
+
 function readConfiguration(): Record<string, unknown> {
   const config = vscode.workspace.getConfiguration("countersign");
   return {
@@ -396,13 +482,21 @@ function errorMessage(error: unknown): string {
 }
 
 let runtime: ExtensionRuntime | undefined;
+let chatRuntime: ChatController | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
   runtime = new ExtensionRuntime(context);
   runtime.register();
+  chatRuntime = new ChatController(context, {
+    start: (request) => runtime!.startChatWorkflow(request),
+    cancel: () => runtime!.cancelChatWorkflow(),
+  });
+  chatRuntime.register();
 }
 
 export function deactivate(): void {
+  chatRuntime?.dispose();
+  chatRuntime = undefined;
   runtime?.dispose();
   runtime = undefined;
 }

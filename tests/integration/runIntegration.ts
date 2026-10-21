@@ -25,6 +25,12 @@ const MOCK_BASE = {
 
 const CASES: IntegrationCase[] = [
   {
+    name: "chat-mock",
+    fixture: "mock-repo",
+    timeoutMs: 180_000,
+    settings: { ...MOCK_BASE, "countersign.localChecks": [] },
+  },
+  {
     name: "mock-clean",
     fixture: "mock-repo",
     timeoutMs: 180_000,
@@ -148,9 +154,12 @@ function writeSettings(repository: string, settings: Record<string, unknown>): v
 /** Locates the extracted extension inside an isolated profile's extensions directory. */
 function installedExtensionPath(extensionsDir: string): string {
   const root = resolve(extensionsDir);
+  const manifest = JSON.parse(readFileSync(join(EXTENSION_ROOT, "package.json"), "utf8")) as
+    { publisher: string; name: string };
+  const prefix = `${manifest.publisher}.${manifest.name}-`;
   const entry = readdirSync(root, { withFileTypes: true })
-    .find((candidate) => candidate.isDirectory() && candidate.name.startsWith("local.countersign-"));
-  if (!entry) throw new Error(`No installed countersign extension found in ${root}.`);
+    .find((candidate) => candidate.isDirectory() && candidate.name.startsWith(prefix));
+  if (!entry) throw new Error(`No installed extension starting with ${prefix} found in ${root}.`);
   return join(root, entry.name);
 }
 

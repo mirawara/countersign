@@ -1,0 +1,24 @@
+{
+  "name": "countersign-chat-surfaces-spike",
+  "displayName": "Countersign Chat Surfaces Spike",
+  "version": "0.0.1",
+  "publisher": "local",
+  "engines": { "vscode": "^1.95.0" },
+  "main": "./extension.js",
+  "activationEvents": ["onView:countersignSpike.chat", "onChatParticipant:countersign-spike.agent"],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [{ "id": "countersignSpike", "title": "Chat Spike", "icon": "./icon.svg" }]
+    },
+    "views": {
+      "countersignSpike": [{ "id": "countersignSpike.chat", "name": "Chat Spike", "type": "webview" }]
+    },
+    "chatParticipants": [{
+      "id": "countersign-spike.agent",
+      "name": "countersign-spike",
+      "fullName": "Countersign Spike",
+      "description": "Mock chat surface comparison",
+      "isSticky": true
+    }]
+  }
+}

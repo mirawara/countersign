@@ -15,6 +15,9 @@ import {
 const CHECK_MARKER = "AIDO_CHECK_MARKER_7391";
 /** A fragment of the Claude prompt built in claudeCliProvider, which must never reach the channel. */
 const PROMPT_FRAGMENT = "Work only inside this repository";
+/** Publisher and name from the manifest under test. */
+const EXTENSION_ID = "mirawara.countersign";
+
 /** A fragment of the mock simulated diff body, which must never reach the channel. */
 const DIFF_FRAGMENT = "Simulated implementation output";
 
@@ -78,6 +81,10 @@ function assertChannelIsClean(recorder: Recorder): void {
 }
 
 const CONTRIBUTED_COMMANDS = [
+  "countersign.openChat",
+  "countersign.newChat",
+  "countersign.clearChatHistory",
+  "countersign.verifyClaudeChatGate",
   "countersign.startWorkflow",
   "countersign.cancelWorkflow",
   "countersign.showStatus",
@@ -88,13 +95,40 @@ const CONTRIBUTED_COMMANDS = [
   "countersign.showCheckResults",
 ];
 
+interface ChatSnapshot { viewResolved: boolean; threadCount: number; activeMessageCount: number; totalMessageCount: number; lastStatus: string | null }
+
+async function chatMock(): Promise<CaseReport> {
+  await assertExtensionActivates();
+  await vscode.commands.executeCommand("countersign.openChat");
+  let snapshot: ChatSnapshot | undefined;
+  for (let attempt = 0; attempt < 40; attempt++) {
+    snapshot = await vscode.commands.executeCommand<ChatSnapshot>("countersign.chatSnapshot");
+    if (snapshot?.viewResolved) break;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert(snapshot?.viewResolved === true, "The packaged chat view did not resolve.");
+  await vscode.commands.executeCommand("countersign.chatMockTurn", "Packaged mock chat turn");
+  snapshot = await vscode.commands.executeCommand<ChatSnapshot>("countersign.chatSnapshot");
+  assert(snapshot?.activeMessageCount === 2 && snapshot.lastStatus === "completed", "The mock turn did not complete in chat storage.");
+  await vscode.commands.executeCommand("countersign.newChat");
+  snapshot = await vscode.commands.executeCommand<ChatSnapshot>("countersign.chatSnapshot");
+  assert(snapshot?.threadCount === 2 && snapshot.activeMessageCount === 0 && snapshot.totalMessageCount === 2,
+    "New conversation did not preserve the first thread.");
+  await vscode.commands.executeCommand("workbench.action.closeSidebar");
+  await vscode.commands.executeCommand("countersign.openChat");
+  snapshot = await vscode.commands.executeCommand<ChatSnapshot>("countersign.chatSnapshot");
+  assert(snapshot?.threadCount === 2 && snapshot.totalMessageCount === 2,
+    "Closing and reopening the sidebar lost chat history.");
+  return { viewResolved: true, mockTurnCompleted: true, threadCount: snapshot.threadCount };
+}
+
 /**
  * Proves the extension is discovered, activates, and registers every contributed command.
  * Activation is lazy behind onCommand events, so it is requested explicitly here rather than
  * inferred from a command that happens to work.
  */
 async function assertExtensionActivates(): Promise<void> {
-  const extension = vscode.extensions.getExtension("local.countersign");
+  const extension = vscode.extensions.getExtension(EXTENSION_ID);
   assert(extension !== undefined, "The countersign extension was not discovered.");
   assert(!extension.isActive, "The extension must stay inactive until a command needs it.");
   await extension.activate();
@@ -297,6 +331,7 @@ async function realWorkflow(): Promise<CaseReport> {
 }
 
 const CASES: Record<string, () => Promise<CaseReport>> = {
+  "chat-mock": chatMock,
   "mock-clean": mockClean,
   "mock-finding": mockFinding,
   "mock-dismiss": mockDismiss,
