@@ -32,18 +32,19 @@ Nothing in Countersign changes how either CLI authenticates, so using it is gove
 
 **This is the part to get right before building a product on top of this repository.**
 
-Anthropic's [Agent SDK overview](https://code.claude.com/docs/en/agent-sdk/overview) states that, without prior approval, third-party developers may not offer claude.ai login or claude.ai usage limits inside their own products. Countersign stays on the permitted side of that line by shipping no login and no account service: the user brings a CLI they have already authenticated. That is the whole reason those features are absent, and it is not a gap to be filled casually.
+Anthropic's [Agent SDK overview](https://code.claude.com/docs/en/agent-sdk/overview) states that, without prior approval, third-party developers may not offer claude.ai login or claude.ai usage limits inside their own products. Countersign ships no login or account service: the user brings a CLI they have already authenticated. It does, however, use the Agent SDK and display provider-reported quota status. The published guidance does not settle whether distributing this particular combination to other users is permitted. The review in this repository establishes a personal-use case, not clearance to distribute the extension.
 
 OpenAI treats the equivalent case separately. [Sign in with ChatGPT](https://developers.openai.com/siwc/quickstart) distinguishes open-source applications from selected commercial partners, and its [app-server token-sharing guide](https://developers.openai.com/siwc/token-sharing-open-source/codex-app-server) expects the application to run its own OAuth flow and manage tokens. Countersign does neither, and reusing the CLI's stored token file as a shortcut to an in-product login is explicitly out of scope.
 
 Consequences for anyone redistributing this code:
 
-1. **Publishing the extension as-is** — a package that drives CLIs the user installed and authenticated — is the case this repository is written for. Even then, the Marketplace listing must not promise provider access or imply an affiliation.
-2. **Adding an in-product Claude login, or surfacing claude.ai usage limits as a feature of your product, requires written approval from Anthropic first.** Do not ship it and ask afterwards.
-3. **Adding a ChatGPT login requires choosing and qualifying for one of OpenAI's documented paths**, with your own OAuth client and token handling, under the terms attached to that path.
-4. **Offering Countersign as a hosted or managed service**, where your infrastructure holds or proxies anyone's provider credentials, is a different product with different terms, and none of the review above covers it.
+1. **Publishing this source repository** does not include the SDK package or a prebuilt extension. It does not establish that a VSIX may be distributed or that third-party use of the existing Claude integration has been cleared.
+2. **Distributing a VSIX or listing the extension** needs a separate review of the SDK's redistribution terms and Anthropic's account rules. Obtain a written answer for the intended distribution and authentication model before releasing a package. A listing must not promise provider access or imply an affiliation.
+3. **Adding an in-product Claude login or offering claude.ai usage limits** requires Anthropic's prior approval under its published Agent SDK guidance.
+4. **Adding a ChatGPT login requires choosing and qualifying for one of OpenAI's documented paths**, with your own OAuth client and token handling, under the terms attached to that path.
+5. **Offering Countersign as a hosted or managed service**, where your infrastructure holds or proxies anyone's provider credentials, is a different product with different terms, and none of the review above covers it.
 
-The evidence and version-by-version results behind these statements are in [verifiche.md](verifiche.md) (Italian). That review concluded **permitted with limits for personal use**; it did not clear distribution with provider login or usage limits, and no later work in this repository has changed that.
+The evidence and version-by-version results behind these statements are in [verifiche.md](verification.md). That review concluded **permitted with limits for personal use**; it did not clear distribution with provider login or usage limits, and no later work in this repository has changed that.
 
 ## Redistributing the package itself
 

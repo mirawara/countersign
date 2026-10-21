@@ -8,7 +8,7 @@ Thanks for looking. Countersign is a small, opinionated tool; the fastest way to
 2. **No implicit permissions.** A write or a command runs only after an explicit request the user answered. A model's text is never treated as authorization, and a command a model proposes is never executed automatically.
 3. **No provider login inside the extension.** See [docs/third-party-accounts.md](docs/third-party-accounts.md). This is a terms constraint, not a style preference.
 4. **No live calls from automated tests.** `npm test` and the default integration cases must never send a provider request. Live probes live in `scripts/`, require `--live`, and run by hand on temporary repositories.
-5. **Claims need evidence.** If a pull request says a capability works, say which version you tested and how someone reproduces it. `docs/verifiche.md` is the model: version, command, result, limit.
+5. **Claims need evidence.** If a pull request says a capability works, say which version you tested and how someone reproduces it. `docs/verification.md` is the model: version, command, result, limit.
 
 ## Setup
 

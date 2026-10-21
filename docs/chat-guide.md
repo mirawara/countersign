@@ -1,0 +1,67 @@
+# Chat guide
+
+Status: first version, verified on **Linux x64** on 21 October 2026. The Command Palette workflow stays available and is documented in the [workflow guide](workflow-guide.md); this page covers the sidebar chat.
+
+## Requirements and installation
+
+- **VS Code 1.106 or newer**; the sidebar and the packaged extension were exercised on VS Code 1.142.0 on Linux. A **trusted workspace with exactly one folder**, which is the root of a Git repository. For real turns the repository must be clean before the first turn: Countersign never runs a reset, a commit or a clean for you.
+- **For real Claude chat:** Claude CLI **2.1.109** verified, Agent SDK **0.3.306** as a dependency of the extension. The `claude` command must be on `PATH` or set in `countersign.claudeExecutable`. A different version stays blocked until the adapter is re-verified; for a supported pair, run the isolation gate on the machine you work on.
+- **For real Codex chat:** Codex CLI **0.163.0** verified, with `codex app-server` available. The `codex` command must be on `PATH` or set in `countersign.codexExecutable`. Other versions stay blocked until the protocol is re-verified.
+- **Node.js and npm** are needed to build or develop the extension, not to use an installed build. Git and the provider CLIs must be present on the machine running the extension host.
+
+From source: `npm install`, `npm run compile`, then launch **Run Extension** in VS Code. For a local package: `npm run package`, then install `countersign-0.1.0.vsix` with **Extensions: Install from VSIX...**, and run **Developer: Reload Window** in the window you want to use. The package uses the Claude CLI already installed on the machine and excludes the SDK's optional bundled binary.
+
+To open the chat, press **F1** (or `Ctrl+Shift+P`), type **Countersign: Open Chat** and press Enter. On a new installation the view appears in the **Secondary Side Bar** on the right; if that bar is hidden, press `Ctrl+Alt+B`. Windows that had already moved Countersign keep their previous placement: right-click the icon or the **Countersign** header → **Move To** → **Secondary Side Bar**. VS Code remembers the choice. If the command does not appear, check in the Extensions panel that **Countersign** is enabled for the current window or profile; in a remote window, check the remote extension host too.
+
+## First conversation
+
+The sidebar offers real providers only. The former **Mock** entry is gone: a mock turn remains as an internal command used by the packaged integration test, not as a user-facing option.
+
+1. Run **Countersign: Open Chat** from the Command Palette.
+2. Choose **Provider** (Claude or Codex), **Model**, **Effort** and **Mode: Chat**, then send with **Send** or `Ctrl/Cmd+Enter`. The first send needs the login described below; while a provider is unavailable, **Send** stays disabled and the line under the menus explains why.
+3. Your messages appear on the right, agent replies on the left. Replies are formatted: headings, lists, quotes, `inline code` and fenced code blocks with the declared language and horizontal scrolling. Token counts, model, effort and quota appear as labels under the text; detailed activity sits in **Activity**, collapsed by default.
+4. Close and reopen the sidebar: the thread stays with the workspace. Use **＋** for a new thread, **✎** to rename, the search box to find a conversation, **⇩** to export a Markdown summary and **⌫** to delete one. **Countersign: Clear Chat History** deletes every thread in the workspace.
+
+Local limits: 20 threads, 200 messages per thread, 100,000 characters of text per message. At 20 threads you must delete one before creating another; messages beyond the per-thread limit are dropped from the store. Search covers the titles and the text of the threads that remain.
+
+## Login and the first real turn
+
+Sign in with the official CLIs — for example `claude auth login` and `codex login` — then confirm with `claude auth status` and `codex login status`. Countersign uses **the account already active in the CLI**, without reading, copying or storing tokens, cookies or API keys. If `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `OPENAI_API_KEY` or `CODEX_API_KEY` are present in the environment, subscription-based chat stops: remove them from the extension host's environment and try again. Login, logout and revocation are handled by the providers.
+
+Select Claude or Codex in the sidebar. The selector queries the CLI and shows the models and effort levels returned for the active login; **Refresh** repeats the check. Codex `model/list` is a catalogue: a listed model can still be refused when the turn runs. Claude effort and Codex reasoning effort are distinct parameters, and `Default` leaves the choice to the CLI. The effective effort is shown only when the protocol reports it. The account label shows the email address when the provider supplies one, otherwise the login method.
+
+The chat keeps both the requested model and the effective one when the provider reports it. A native session resumes only for the same account and the same requested model; changing either starts a new session with a short recap of the previous messages.
+
+For Claude, run **Countersign: Verify Claude Chat Isolation** when the sidebar asks for it. The command asks for confirmation, then uses two short Claude turns in a temporary repository to check session resumption and that project settings are suppressed in the second turn. It stores only versions and a date in `~/.countersign/claude-chat-gate.json`; a version change blocks the chat until the adapter and the gate are re-verified. The old workflow's gate is a separate record.
+
+Send a request in a clean test repository. The Claude tools available in chat are Read, Glob, Grep, Edit and Write; Bash, PowerShell, subagents and web access are not enabled. Codex starts in a read-only sandbox with `on-request` approvals. When a provider asks for permission, the sidebar shows the operation: **Allow once** authorizes that request, **Deny** refuses it, **Cancel turn** stops the turn. Closing the sidebar approves nothing. After a change, **Show diff** on the message opens the stored Git diff; an external change to the repository between turns blocks the next real turn, so changes are never attributed to the wrong author.
+
+**Add file** attaches the active file's path and, when there is a selection, up to 8,000 characters of it to the next prompt. It is a text reference: images and other binary attachments are not supported yet. The file, and the target of a symbolic link, must be inside the workspace. Before sending selected text, check that it contains no secrets.
+
+## Modes and the Balanced workflow
+
+**Chat (one provider)** sends a turn to the selected provider, and you can switch between Claude and Codex within a thread. **Add mode** creates a chat mode with a name, an instruction and a per-turn timeout of 1 to 60 minutes; **Delete mode** removes a custom mode. Every message records the mode it used. The instruction and the timeout are fixed when the turn starts, so editing or deleting the mode afterwards does not change a turn already running.
+
+**Claude + Codex (Balanced)** runs the real Claude and Codex pair. The model choice applies to that task only and does not change your global settings. Four selectors are available: **Claude model and effort**, and **Codex model and reasoning effort**. **Default (CLI)** leaves the choice to the respective CLI; to specify an effort you must first choose a model. Switching to Balanced loads the catalogues, and **Refresh** reloads them. A listed model can still be refused by the provider when the request runs. Tools, local checks and timeouts continue to come from the VS Code settings.
+
+After **Start workflow**, Claude prepares a plan using read-only tools. If it needs a decision from you, the question appears in the thread: write your answer in the **Send answer** box. The plan and the execution details then appear in the thread; **Approve plan** starts the changes and **Cancel workflow** stops before any implementation. The old modal confirmation is not used for approval from the sidebar — the **Countersign: Start Workflow** command keeps its own modal dialog and the global provider settings.
+
+During implementation, review or correction an agent can come back with a question. The workflow pauses between two CLI invocations and resumes after you answer in the chat. Partial changes are preserved, and the Git diff is checked for external modification while it waits. A question cannot interrupt a single tool call already in flight. At most three questions are allowed during planning and three per execution phase; at the limit the workflow stops with the reason visible. **Stop** or **Cancel workflow** end the wait. Do not modify the repository while Countersign is waiting for an answer.
+
+When it finishes, the chat keeps a **detailed report**: the approved plan, questions and answers, the phase history, the files changed, each check with its outcome and part of its output, the review with findings and evidence, the correction, and the usage the providers reported. **Show diff** on the report opens the stored patch. The report truncates very large output and findings; **Show Review Details** and **Show Check Results** show the full detail. Claude implements, Codex reviews the diff and Claude gets one correction pass — this is not yet the negotiation-to-consensus planned for `Strict`. The sidebar says when a Countersign task holds the repository and disables starting another one. That lock covers a single extension host: separate VS Code windows are not coordinated yet.
+
+## Quota, sessions and cancellation
+
+Claude can report subscription quota status (`allowed`, `allowed_warning`, `rejected`); for Codex, and whenever it is absent, the chat shows **Unavailable**. Token counts and US dollar values come from the SDK, and the dollar figures are **estimates at API list prices — not a charge against your subscription and not a spending cap**. At a usage limit the turn stops; no account switch happens. This version uses one active account per provider: multiple profiles, automatic switching and `Strict` are out of scope.
+
+Threads, modes and native session references live in VS Code's `workspaceState`. Reopening the sidebar is verified in the packaged extension, and rebuilding the store from saved data is covered by tests, but a full restart of an ordinary VS Code window has not been verified automatically yet. Diffs are local files in the extension's workspace storage and **can contain sensitive code**. Deleting a thread, or **Clear Chat History**, removes Countersign's messages and diffs; the providers' own native sessions stay in the directories Claude and Codex manage, so use their history controls to remove those. Deleting `~/.countersign/claude-chat-gate.json` revokes the chat gate without logging anyone out. A failed or cancelled turn can leave partial changes: check `git status` and the diff before starting again.
+
+## Limits and troubleshooting
+
+- Linux x64 is the only verified platform. Windows stays blocked because process-tree cancellation is not implemented there; macOS needs its own verification.
+- `codex app-server` is experimental at the verified version, and a different version closes Codex chat. The older `codex exec` adapter remains in the Balanced workflow.
+- Organization-managed settings and a given model's actual capabilities can restrict tools and access further. A subscription login in the CLI does not certify future billing. Distributing a product that offers a Claude login requires clarification of Anthropic's terms — see [third-party-accounts.md](third-party-accounts.md).
+- After a turn that changes files, the chat stores a cumulative Git diff against `HEAD`. Git-ignored files, binaries and excluded paths are not included, although a provider may still have touched them, and the collector refuses a diff that cannot be reviewed. Automatic local checks belong to Balanced, not to free-form Chat.
+- If a provider does not appear, check workspace trust, a single Git folder, the CLI versions, the official login and the API-key environment variables, then press **Refresh**. For the older workflow, use **Show Diagnostics**. The chat never writes prompts, credentials or diffs to the Output Channel.
+
+Reproducible live probes live in `scripts/smoke-chat-adapters.mjs`, `scripts/smoke-chat-write.mjs` and `scripts/smoke-codex-approval.mjs`. They require `--live`, consume quota and run only against temporary repositories. `npm test` and the packaged `chat-mock` case send no real prompt.

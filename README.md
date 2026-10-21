@@ -87,7 +87,7 @@ Or press <kbd>F5</kbd> in VS Code to launch an Extension Development Host.
 4. For real Claude turns, run **Countersign: Verify Claude Chat Isolation** once per CLI/SDK version and confirm its two live requests. Until it passes, real Claude chat stays closed.
 5. Approve or deny each permission request as it appears. **Stop** cancels the turn and its process tree.
 
-For the full walkthrough — account setup, modes, storage, troubleshooting — read the [chat guide](docs/guida-chat.md) (Italian).
+For the full walkthrough — account setup, modes, storage, troubleshooting — read the [chat guide](docs/chat-guide.md).
 
 ## The `Balanced` workflow
 
@@ -120,7 +120,7 @@ Found a security problem? See [SECURITY.md](SECURITY.md).
 
 Countersign drives CLIs you installed and signed in to. It has no login of its own and cannot create one for you. Turns consume your own subscription limits or API credits; the US dollar figures shown in chat are the CLI's own estimates at API list prices, not a charge on a subscription seat. When a limit is reached, the turn stops and explains — there is no account rotation and no automatic failover.
 
-**If you plan to fork or redistribute this, read [docs/third-party-accounts.md](docs/third-party-accounts.md) first.** Anthropic requires prior approval before a third-party product offers claude.ai login or claude.ai usage limits, and OpenAI treats in-product ChatGPT sign-in as its own qualified path. This project stays clear of both by shipping no login; adding one is not a small feature.
+**If you plan to fork or redistribute this, read [docs/third-party-accounts.md](docs/third-party-accounts.md) first.** Countersign has no in-product login, but the rules for distributing its Claude SDK integration and provider-reported quota display are not settled by the personal-use review. Anthropic's published guidance restricts third-party products that offer claude.ai login or usage limits; OpenAI has separate paths for in-product ChatGPT sign-in.
 
 Countersign is an independent project, not affiliated with or endorsed by Anthropic or OpenAI.
 
@@ -143,9 +143,9 @@ Settings live under `countersign.*`. The ones you are most likely to touch:
 
 ## Documentation
 
-- [Chat guide](docs/guida-chat.md) — sidebar, selectors, accounts, modes, storage, troubleshooting (Italian)
-- [Workflow guide](docs/guida-utente.md) — the Command Palette workflow end to end (Italian)
-- [Verification results](docs/verifiche.md) — probes, versions and limits behind every capability claim (Italian)
+- [Chat guide](docs/chat-guide.md) — sidebar, selectors, accounts, modes, storage, troubleshooting
+- [Workflow guide](docs/workflow-guide.md) — the Command Palette workflow end to end
+- [Verification results](docs/verification.md) — probes, versions and limits behind every capability claim
 - [Claude and Codex accounts](docs/third-party-accounts.md) — what the extension does with your accounts, and the redistribution question
 - [Roadmap](ROADMAP.md) — CLI, macOS and Windows support, `Strict` mode, what is not planned
 - [Changelog](CHANGELOG.md)
