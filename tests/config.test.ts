@@ -9,6 +9,12 @@ describe("configuration", () => {
     expect(config.findingThreshold).toBe("High");
     expect(config.terminationGracePeriodMs).toBe(1000);
     expect(config.localChecks).toEqual([]);
+    expect(config.executionPermission).toBe("askBeforeChange");
+  });
+
+  it("requires an explicit supported post-plan permission level", () => {
+    expect(validateConfiguration({ executionPermission: "fullAccess" }).executionPermission).toBe("fullAccess");
+    expect(() => validateConfiguration({ executionPermission: "auto" })).toThrow(/executionPermission/);
   });
 
   it("accepts a configured finding threshold and grace period", () => {

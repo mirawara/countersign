@@ -9,6 +9,7 @@ spikes/**
 tsconfig.json
 tsconfig.tests.json
 tsconfig.integration.json
+.nvmrc
 vitest.config.*
 *.ts
 *.vsix

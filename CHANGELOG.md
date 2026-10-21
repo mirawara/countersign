@@ -6,6 +6,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
+- Mandatory read-only plan approval before every real chat turn and Balanced execution, with post-plan **Ask before change** and **Full access** choices. Ask prompts for edits, commands, network tools and configured local checks; Full access grants broad host access without further prompts.
 - Sidebar chat: multiple threads per workspace, search, rename, Markdown export, streaming replies, interactive permission requests and diff artefacts.
 - Claude provider through the Claude Agent SDK and Codex provider through `codex app-server`, with model and effort catalogues read from the installed CLI and the active account.
 - Isolation gate for chat sessions, bound to the exact installed CLI and SDK versions, with **Countersign: Verify Claude Chat Isolation**.
@@ -17,6 +18,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Changed
 
+- Real chat now makes separate planning and execution requests for each approved message, including questions that do not need file changes. Claude's direct file tools stay inside the repository in Ask mode; approved commands and Codex escalations may reach outside it.
 - The mock provider is no longer offered in the sidebar. It remains an internal command used by the packaged integration test, and as a settings-only path for the Command Palette workflow's test cases.
 - `Balanced` from the sidebar always runs the real Claude and Codex pair.
 

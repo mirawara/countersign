@@ -27,6 +27,7 @@ export async function fileToolWithinWorkspace(cwd: string, tool: string, input: 
   const root = await realpath(cwd);
   const specified = tool === "Glob" || tool === "Grep" ? input.path : input.file_path;
   if (specified !== undefined && typeof specified !== "string") return false;
+  if (typeof specified === "string" && /^~[^/\\]*([/\\]|$)/.test(specified)) return false;
   const target = typeof specified === "string" && specified ? resolve(cwd, specified) : root;
   let canonical: string;
   try { canonical = await realpath(tool === "Write" ? dirname(target) : target); }
@@ -42,6 +43,7 @@ export async function fileToolWithinWorkspace(cwd: string, tool: string, input: 
     }
   }
   if ((tool === "Glob" || tool === "Grep") && typeof input.pattern === "string" &&
-      (input.pattern.startsWith("/") || input.pattern.split(/[\\/]/).includes(".."))) return false;
+      (input.pattern.startsWith("/") || /^~[^/\\]*([/\\]|$)/.test(input.pattern) ||
+        input.pattern.split(/[\\/]/).includes(".."))) return false;
   return true;
 }

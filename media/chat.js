@@ -4,7 +4,7 @@
   const el = (id) => document.getElementById(id);
   const dom = Object.fromEntries([
     "thread", "new-thread", "rename-thread", "export-thread", "delete-thread", "search", "provider", "model", "effort", "mode", "add-mode", "delete-mode", "account", "refresh", "repo-lock",
-    "balanced-options", "balanced-claude-model", "balanced-claude-effort", "balanced-codex-model", "balanced-codex-effort",
+    "balanced-options", "balanced-claude-model", "balanced-claude-effort", "balanced-codex-model", "balanced-codex-effort", "execution-permission",
     "notice", "messages", "approval", "approval-summary", "approval-detail", "approve", "deny", "cancel-approval",
     "workflow-prompt", "workflow-title", "workflow-detail", "workflow-answer-label", "workflow-answer", "workflow-submit", "workflow-cancel",
     "attachment", "prompt", "add-file", "stop", "send",
@@ -402,7 +402,8 @@
     post({ type: "send", text: dom.prompt.value, provider: dom.provider.value,
       model: dom.model.value, effort: dom.effort.value, mode: dom.mode.value, attachment,
       agents: balanced ? "real" : undefined,
-      selection: balanced ? { ...balancedSelection } : undefined });
+      selection: balanced ? { ...balancedSelection } : undefined,
+      executionPermission: dom.executionPermission.value });
   });
   dom.prompt.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); dom.send.click(); }

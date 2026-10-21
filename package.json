@@ -6,7 +6,7 @@
     "color": "#1F1D1A",
     "theme": "dark"
   },
-  "description": "A local VS Code sidebar chat for Claude and Codex, with the bounded Claude implementation and Codex review workflow.",
+  "description": "A local VS Code sidebar chat for Claude and Codex, with plan approval and a Claude implementation and Codex review workflow.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -123,6 +123,12 @@
     "configuration": {
       "title": "Countersign",
       "properties": {
+        "countersign.executionPermission": {
+          "type": "string",
+          "enum": ["askBeforeChange", "fullAccess"],
+          "default": "askBeforeChange",
+          "description": "After mandatory plan approval: ask before Claude changes, commands or network tools, or grant full system access for the task. Sidebar selection overrides this setting."
+        },
         "countersign.provider": {
           "type": "string",
           "enum": [
@@ -174,7 +180,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Explicit Claude tool allowlist shown before a task. Bash is not supported."
+          "description": "Legacy bounded Claude tool list; Full access uses the full built-in tool set and Ask before change uses per-tool prompts."
         },
         "countersign.localChecks": {
           "type": "array",
@@ -265,12 +271,12 @@
     "@eslint/js": "^10.0.1",
     "@types/node": "^22.0.0",
     "@types/vscode": "^1.95.0",
-    "@vscode/test-electron": "^2.5.2",
+    "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "4.0.0",
     "eslint": "^10.13.0",
-    "typescript": "^5.7.0",
-    "typescript-eslint": "^8.71.2",
-    "vitest": "^4.1.12"
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.72.0",
+    "vitest": "^5.0.5"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.306"

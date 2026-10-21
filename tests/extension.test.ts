@@ -113,4 +113,27 @@ describe("VS Code command entry", () => {
     expect(warnings).toEqual([]);
     runtime.dispose();
   });
+
+  it("does not execute Balanced when the proposed plan is declined", async () => {
+    repository = await createCleanGitRepository();
+    vi.spyOn(claudeChatAdapter, "inspectClaude").mockResolvedValue({ version: "2.1.109 (Claude Code)",
+      accountLabel: "Claude subscription", models: [] });
+    vi.spyOn(codexChatAdapter, "inspectCodex").mockResolvedValue({ version: "codex-cli 0.163.0",
+      accountLabel: "ChatGPT subscription", models: [] });
+    vi.spyOn(ClaudeCliProvider.prototype, "checkAvailability").mockResolvedValue({ available: true });
+    vi.spyOn(ClaudeCliProvider.prototype, "proposePlan").mockResolvedValue({ plan: "Change feature.ts.", questions: [] });
+    const execute = vi.spyOn(ClaudeCliProvider.prototype, "execute");
+    const runtime = new ExtensionRuntime({ subscriptions: [], workspaceState: { get: () => undefined, update: () => Promise.resolve() } } as unknown as vscode.ExtensionContext);
+    const result = await runtime.startChatWorkflow({ task: "Change feature", providers: { provider: "claude", codexProvider: "real" },
+      executionPermission: "fullAccess", interaction: {
+        askQuestion: async () => undefined,
+        confirmPlan: async (_plan, details) => {
+          expect(details).toContain("Full access");
+          return false;
+        },
+      } });
+    expect(result).toBeUndefined();
+    expect(execute).not.toHaveBeenCalled();
+    runtime.dispose();
+  });
 });

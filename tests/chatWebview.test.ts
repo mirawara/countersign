@@ -75,9 +75,10 @@ describe("Balanced sidebar controls", () => {
     get("balanced-codex-model").dispatch("change");
     get("balanced-codex-effort").value = "xhigh";
     get("balanced-codex-effort").dispatch("change");
+    get("execution-permission").value = "fullAccess";
     get("prompt").value = "Change README";
     get("send").dispatch("click");
-    expect(posted.at(-1)).toMatchObject({ type: "send", agents: "real", selection: {
+    expect(posted.at(-1)).toMatchObject({ type: "send", agents: "real", executionPermission: "fullAccess", selection: {
       claudeModel: "opus[1m]", claudeEffort: "high", codexModel: "gpt-6.1-sol", codexEffort: "xhigh",
     } });
   });

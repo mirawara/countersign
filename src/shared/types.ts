@@ -123,6 +123,7 @@ export interface WorkflowResult {
   mock: boolean;
   implementationProvider: "mock" | "claude";
   reviewProvider: "mock" | "real";
+  executionPermission?: "askBeforeChange" | "fullAccess";
   metrics: { provider: string; estimatedCostUsd?: number; inputTokens?: number; outputTokens?: number }[];
 }
 

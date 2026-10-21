@@ -3,12 +3,14 @@ import { FindingSeverity } from "../shared/types";
 
 export type ImplementationProvider = "mock" | "claude";
 export type CodexProviderMode = "mock" | "real";
+export type ExecutionPermission = "askBeforeChange" | "fullAccess";
 
 export type WorkflowModelSelection = Pick<OrchestratorConfig,
   "claudeModel" | "claudeEffort" | "codexModel" | "codexEffort">;
 export type WorkflowProviderSelection = Pick<OrchestratorConfig, "provider" | "codexProvider">;
 
 export interface OrchestratorConfig {
+  executionPermission: ExecutionPermission;
   provider: ImplementationProvider;
   claudeExecutable: string;
   claudeModel: string;
@@ -34,6 +36,10 @@ const ALLOWED_CLAUDE_TOOLS = new Set<string>(DEFAULT_CLAUDE_TOOLS);
 type RawConfiguration = Partial<Record<keyof OrchestratorConfig, unknown>>;
 
 export function validateConfiguration(raw: RawConfiguration): OrchestratorConfig {
+  const executionPermission = raw.executionPermission ?? "askBeforeChange";
+  if (executionPermission !== "askBeforeChange" && executionPermission !== "fullAccess") {
+    throw new Error("countersign.executionPermission must be 'askBeforeChange' or 'fullAccess'.");
+  }
   const provider = raw.provider ?? "mock";
   if (provider !== "mock" && provider !== "claude") {
     throw new Error("countersign.provider must be 'mock' or 'claude'.");
@@ -97,6 +103,7 @@ export function validateConfiguration(raw: RawConfiguration): OrchestratorConfig
   }
 
   return {
+    executionPermission,
     provider,
     claudeExecutable,
     claudeModel,

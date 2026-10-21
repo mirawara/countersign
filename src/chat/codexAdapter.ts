@@ -1,6 +1,7 @@
 import { ChildProcess, spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { ChatModelOption } from "./types";
+import { ExecutionPermission } from "../configuration/config";
 import { executableOutput, safeSummary, subscriptionEnvironment } from "./providerUtils";
 
 type Json = Record<string, unknown>;
@@ -130,9 +131,15 @@ export interface CodexTurn {
   onText: (text: string) => void;
   onActivity: (text: string) => void;
   askPermission: (kind: "command" | "fileChange", detail: string, signal: AbortSignal) => Promise<boolean>;
+  phase?: "planning";
+  executionPermission?: ExecutionPermission;
 }
 
 export async function runCodexTurn(options: CodexTurn): Promise<{ sessionId: string }> {
+  const fullAccess = options.phase !== "planning" && options.executionPermission === "fullAccess";
+  const approvalPolicy = options.phase === "planning" || fullAccess ? "never" : "on-request";
+  const sandbox = fullAccess ? "danger-full-access" : "read-only";
+  const sandboxPolicy = { type: fullAccess ? "dangerFullAccess" : "readOnly" };
   const server = new CodexAppServer(options.executable, options.cwd);
   let threadId = options.sessionId;
   let turnId: string | undefined;
@@ -150,14 +157,14 @@ export async function runCodexTurn(options: CodexTurn): Promise<{ sessionId: str
     if (threadId) await server.request("thread/resume", { threadId });
     else {
       const started = await server.request("thread/start", { cwd: options.cwd, model: options.model,
-        approvalPolicy: "on-request", sandbox: "read-only" });
+        approvalPolicy, sandbox });
       threadId = get(started.thread, "id") as string | undefined;
       if (!threadId) throw new Error("Codex did not return a thread ID.");
     }
     const started = await server.request("turn/start", { threadId,
       input: [{ type: "text", text: options.prompt }], cwd: options.cwd, model: options.model,
       ...(options.effort ? { effort: options.effort } : {}),
-      approvalPolicy: "on-request", sandboxPolicy: { type: "readOnly" },
+      approvalPolicy, sandboxPolicy,
     }, 30_000);
     turnId = get(started.turn, "id") as string | undefined;
     if (!turnId) throw new Error("Codex did not return a turn ID.");
@@ -180,7 +187,8 @@ export async function runCodexTurn(options: CodexTurn): Promise<{ sessionId: str
       }
       if (typeof event.id === "number" && (method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval")) {
         const kind = method === "item/commandExecution/requestApproval" ? "command" : "fileChange";
-        const approved = await options.askPermission(kind, safeSummary(params), options.signal);
+        const approved = options.phase === "planning" ? false : fullAccess ? true
+          : await options.askPermission(kind, safeSummary(params), options.signal);
         server.respond(event.id, { decision: approved && !cancelled ? "accept" : "cancel" });
       }
       if (method === "turn/completed" && get(params.turn, "id") === turnId) {

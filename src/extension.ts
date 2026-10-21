@@ -87,7 +87,8 @@ export class ExtensionRuntime {
 
       let config;
       try {
-        config = validateConfiguration({ ...readConfiguration(), ...request?.providers, ...request?.selection });
+        config = validateConfiguration({ ...readConfiguration(), ...request?.providers, ...request?.selection,
+          ...(request?.executionPermission ? { executionPermission: request.executionPermission } : {}) });
       } catch (error) {
         this.currentState = "failed";
         void vscode.window.showErrorMessage(errorMessage(error));
@@ -160,7 +161,7 @@ export class ExtensionRuntime {
       let plan: string | undefined;
       const clarifications: NonNullable<WorkflowResult["clarifications"]> = [];
       const planningMetrics: WorkflowResult["metrics"] = [];
-      if (request?.interaction && config.provider === "claude") {
+      if (config.provider === "claude") {
         this.currentState = "awaiting_input";
         const planner = new ClaudeCliProvider({ config, gateRecord: await loadClaudeGateRecord() });
         for (let round = 0; round < 4; round++) {
@@ -173,7 +174,9 @@ export class ExtensionRuntime {
           if (proposal.questions.length === 0) { plan = proposal.plan.trim(); break; }
           for (const question of proposal.questions) {
             if (clarifications.length >= 3) throw new Error("Planning stopped after three clarification questions. No files were changed.");
-            const answer = await request.interaction.askQuestion("planning", question, controller.signal);
+            const answer = request?.interaction
+              ? await request.interaction.askQuestion("planning", question, controller.signal)
+              : await vscode.window.showInputBox({ title: "Countersign planning question", prompt: question, ignoreFocusOut: true });
             if (controller.signal.aborted || !answer?.trim()) { this.currentState = "cancelled"; return; }
             clarifications.push({ phase: "planning", question, answer: answer.trim().slice(0, 20_000) });
           }
@@ -189,14 +192,16 @@ export class ExtensionRuntime {
         `Task: ${task.trim()}`,
         `Claude model: ${config.provider === "claude" ? config.claudeModel || "CLI default" : "Mock"}; effort: ${config.provider === "claude" ? config.claudeEffort || "CLI default" : "Mock"}.`,
         `Codex model: ${config.codexProvider === "real" ? config.codexModel || "CLI default" : "Mock"}; reasoning effort: ${config.codexProvider === "real" ? config.codexEffort || "CLI default" : "Mock"}.`,
-        `Claude tools (${config.provider === "mock" ? "mock uses none" : "pre-authorized for this task"}): ${config.claudeAllowedTools.join(", ") || "none"}. Bash and MCP are excluded.`,
+        config.provider === "mock" ? "Claude tools: mock uses none." : config.executionPermission === "fullAccess"
+          ? "After plan approval: Full access. Claude may run commands, use the network and change files outside the repository without further prompts. MCP remains disabled. The Git diff covers only this repository."
+          : "After plan approval: Ask before change. Claude may read repository files; edits, commands and network tools ask for approval in chat or a VS Code dialog. MCP remains disabled.",
         config.provider === "mock" ? `Mock scenario: ${config.mockScenario}` : "No mock scenario is used in the real workflow.",
-        `Configured local checks (these will run):\n${checksSummary}`,
+        `Configured local checks (${config.executionPermission === "askBeforeChange" ? "each asks for permission before running" : "these will run after approval"}):\n${checksSummary}`,
         "Configured check processes may modify files. Real workflows include their changes in the Git diff; mock workflows fail validation if they change the repository.",
         `Finding threshold for the correction path: ${config.findingThreshold}`,
         config.provider === "mock"
           ? "Implementation: mock only. Changes are simulated in memory; the mock does not edit files."
-          : `Implementation: real Claude CLI (${config.claudeExecutable}) may edit repository files and consume account quota. The estimated budget guard is ${config.budgetGuardUsd} USD per invocation; it is not a billing cap.`,
+          : `Implementation: real Claude CLI (${config.claudeExecutable}) may consume account quota. The estimated budget guard is ${config.budgetGuardUsd} USD per invocation; it is not a billing cap.`,
         config.codexProvider === "real"
           ? `Review: real Codex CLI (${config.codexExecutable}) in a read-only sandbox. It receives the task and ${config.provider === "mock" ? "simulated" : "actual"} diff, can inspect repository files as context, and may consume account quota. The invocation ignores Codex config.toml and user/project execpolicy rules; CODEX_HOME authentication remains available.`
           : "Review: mock Codex; no AI provider request is made.",
@@ -206,7 +211,7 @@ export class ExtensionRuntime {
         ? await request.interaction.confirmPlan(plan ?? "No AI plan was requested for this provider pair.", details, controller.signal)
         : await vscode.window.showWarningMessage(
           config.provider === "claude" ? "Start Claude implementation and Codex review?" : config.codexProvider === "real" ? "Send a review request to Codex?" : "Start the mock workflow?",
-          { modal: true, detail: details }, confirmationLabel) === confirmationLabel;
+          { modal: true, detail: `${plan ? `Proposed plan:\n${plan}\n\n` : ""}${details}` }, confirmationLabel) === confirmationLabel;
       if (!confirmed) {
         this.currentState = "cancelled";
         return;
@@ -231,7 +236,8 @@ export class ExtensionRuntime {
 
       let currentConfig;
       try {
-        currentConfig = validateConfiguration({ ...readConfiguration(), ...request?.providers, ...request?.selection });
+        currentConfig = validateConfiguration({ ...readConfiguration(), ...request?.providers, ...request?.selection,
+          ...(request?.executionPermission ? { executionPermission: request.executionPermission } : {}) });
       } catch (error) {
         this.currentState = "failed";
         void vscode.window.showErrorMessage(errorMessage(error));
@@ -269,7 +275,10 @@ export class ExtensionRuntime {
 
       try {
         const claude = config.provider === "claude"
-          ? new ClaudeCliProvider({ config, gateRecord: await loadClaudeGateRecord() })
+          ? new ClaudeCliProvider({ config, gateRecord: await loadClaudeGateRecord(),
+              askPermission: request?.interaction?.askPermission ?? (async (tool, detail) =>
+                await vscode.window.showWarningMessage(`Allow Claude ${tool}?`, { modal: true, detail }, "Allow once") === "Allow once"),
+            })
           : new MockProvider("implementation", config.mockScenario);
         const codex = config.codexProvider === "real"
           ? new CodexCliProvider({
@@ -293,6 +302,8 @@ export class ExtensionRuntime {
           codex,
           signal: controller.signal,
           askQuestion: request?.interaction?.askQuestion,
+          askPermission: request?.interaction?.askPermission ?? (async (tool, detail) =>
+            await vscode.window.showWarningMessage(`Allow ${tool}?`, { modal: true, detail }, "Allow once") === "Allow once"),
           onEvent: (event) => { this.onEvent(event); request?.onEvent?.(event); },
         });
         this.currentState = result.state;
@@ -459,6 +470,7 @@ function readConfiguration(): Record<string, unknown> {
     codexProvider: config.get<unknown>("codexProvider", "mock"),
     codexExecutable: config.get<unknown>("codexExecutable", "codex"),
     mockScenario: config.get<unknown>("mockScenario", "clean"),
+    executionPermission: config.get<unknown>("executionPermission", "askBeforeChange"),
     claudeAllowedTools: config.get<unknown>("claudeAllowedTools", ["Read", "Glob", "Grep", "Edit", "Write"]),
     localChecks: config.get<unknown>("localChecks", []),
     budgetGuardUsd: config.get<unknown>("budgetGuardUsd", 1),

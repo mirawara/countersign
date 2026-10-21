@@ -65,6 +65,7 @@ export class ChatView implements vscode.WebviewViewProvider {
 <label>Codex model<select id="balanced-codex-model"></select></label>
 <label>Codex reasoning<select id="balanced-codex-effort"></select></label>
 </div>
+<label>After plan approval<select id="execution-permission"><option value="askBeforeChange">Ask before change</option><option value="fullAccess">Full access</option></select></label>
 <div class="mode-actions"><button id="add-mode" title="Define a chat mode">Add mode</button><button id="delete-mode" title="Delete selected custom mode">Delete mode</button></div>
 <div class="account-line"><span id="account">Account: unavailable</span><button id="refresh" title="Refresh providers">Refresh</button></div>
 <div id="repo-lock" class="repo-lock" role="status" aria-live="polite"></div>

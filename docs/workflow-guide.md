@@ -63,10 +63,10 @@ With the defaults the diff is simulated in memory: Claude and Codex are not call
 
    Adapt `localChecks` to your repository's commands. The extension never discovers or starts tests on its own: with an empty list it runs no check at all. Checks take a separate executable and argument array, with no shell. Using user settings avoids creating an untracked `.vscode/settings.json` in the repository under test.
 3. Run **Countersign: Verify Claude Settings Isolation**. After your confirmation it runs a controlled test with **two real Claude requests**. A pass applies only to the exact installed Claude CLI version, so repeat it after an upgrade. The verification can consume quota.
-4. Make sure the repository is clean and run **Start Workflow**. The confirmation shows the repository, the task, the tools granted to Claude, the checks and the providers. Accept only after checking those. A real run can consume quota on both accounts.
+4. Make sure the repository is clean and run **Start Workflow**. Claude proposes a read-only plan first. The confirmation shows that plan, the repository, the permission level, the checks and the providers. Approve it to begin execution. A real run can consume quota on both accounts.
 5. Follow progress in the Output Channel. When it ends, open the diff, the review and the check results, and compare `git diff` and `git status` before keeping anything. The extension never commits, stages, resets or cleans.
 
-In real mode Claude may use only `Read`, `Glob`, `Grep`, `Edit` and `Write`, per the confirmed allowlist. It does not use Bash: local checks are started separately by the extension. Codex examines the diff in a read-only sandbox and can read repository files as context. No provider API is called directly.
+In **Ask before change**, Claude requests approval before edits, commands and network tools; its direct file tools are limited to the repository, and each configured local check also asks before it runs. An approved Bash command or local check can still affect external files. In **Full access**, Claude can run commands, use the network and change files outside the repository without further prompts after plan approval. MCP remains disabled. Configured local checks run separately. Codex examines the repository diff in a read-only sandbox and can read repository files as context. The diff and report cannot independently audit external files or network actions. No provider API is called directly.
 
 ### When a check or the review finds a problem
 

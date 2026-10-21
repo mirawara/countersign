@@ -125,11 +125,26 @@ describe("mock BALANCED workflow", () => {
       codex: new CapturingReviewProvider((diff) => { reviewedDiff = diff; }),
       signal: new AbortController().signal,
       onEvent: () => undefined,
+      askPermission: async (tool) => tool === "Local check: generate",
     });
     expect(result.state).toBe("completed_clean");
     expect(reviewedDiff).toContain("+export const feature = true;");
     expect(reviewedDiff).toContain("+generated");
     expect(result.diff).toBe(reviewedDiff);
+  });
+
+  it("does not run a local check declined in Ask before change", async () => {
+    const repository = await createCleanGitRepository();
+    repositories.push(repository);
+    const config = validateConfiguration({ provider: "claude", codexProvider: "real",
+      localChecks: [{ id: "generate", executable: process.execPath,
+        args: ["-e", "require('node:fs').writeFileSync('generated.txt','generated')"] }] });
+    const result = await runMockWorkflow({ repository, task: "write a feature", config,
+      claude: new DiskImplementationProvider(), codex: new CapturingReviewProvider(() => undefined),
+      signal: new AbortController().signal, onEvent: () => undefined,
+      askPermission: async () => false });
+    expect(result.state).toBe("blocked_permissions");
+    await expect(readFile(join(repository, "generated.txt"), "utf8")).rejects.toThrow();
   });
 
   it("re-runs checks even when findings remain after a correction", async () => {

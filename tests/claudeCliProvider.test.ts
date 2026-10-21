@@ -9,7 +9,7 @@ import { createCleanGitRepository, removeRepository } from "./helpers/git";
 const repositories: string[] = [];
 afterEach(async () => Promise.all(repositories.splice(0).map(removeRepository)));
 const HELP = "--print --output-format --json-schema --max-budget-usd --setting-sources --strict-mcp-config --disable-slash-commands --tools --allowedTools --permission-mode --no-session-persistence";
-const config = validateConfiguration({ provider: "claude", codexProvider: "real" });
+const config = validateConfiguration({ provider: "claude", codexProvider: "real", executionPermission: "fullAccess" });
 const gateRecord = { version: "2.1.109 (Claude Code)", passedAt: "2026-10-19T00:00:00.000Z", passed: true as const };
 
 describe("ClaudeCliProvider", () => {
@@ -53,14 +53,13 @@ describe("ClaudeCliProvider", () => {
     expect(invocation?.options.stdin).toContain("Implement a feature");
     const args = invocation?.args ?? [];
     expect(args.slice(args.indexOf("--setting-sources"), args.indexOf("--setting-sources") + 2)).toEqual(["--setting-sources", ""]);
-    expect(args[args.indexOf("--tools") + 1]).toBe(config.claudeAllowedTools.join(","));
-    expect(args[args.indexOf("--allowedTools") + 1]).toBe(config.claudeAllowedTools.join(","));
-    expect(args).not.toContain("Bash");
-    expect(args).not.toContain("--dangerously-skip-permissions");
+    expect(args[args.indexOf("--tools") + 1]).toBe("default");
+    expect(args).not.toContain("--allowedTools");
+    expect(args).toContain("--dangerously-skip-permissions");
   });
 
   it("passes the selected model and effort to the Claude implementation", async () => {
-    const selected = validateConfiguration({ provider: "claude", codexProvider: "real",
+    const selected = validateConfiguration({ provider: "claude", codexProvider: "real", executionPermission: "fullAccess",
       claudeModel: "sonnet", claudeEffort: "high" });
     let args: string[] = [];
     const provider = new ClaudeCliProvider({ config: selected, gateRecord, runner: async (_executable, invocation) => {
@@ -74,6 +73,45 @@ describe("ClaudeCliProvider", () => {
     await provider.execute(request(repository));
     expect(args.slice(args.indexOf("--model"), args.indexOf("--model") + 2)).toEqual(["--model", "sonnet"]);
     expect(args.slice(args.indexOf("--effort"), args.indexOf("--effort") + 2)).toEqual(["--effort", "high"]);
+  });
+
+  it("explains when managed Claude settings refuse Full access", async () => {
+    const repository = await createCleanGitRepository();
+    repositories.push(repository);
+    const provider = new ClaudeCliProvider({ config, gateRecord, runner: async (_executable, args) =>
+      args[0] === "--version" ? result(0, `${gateRecord.version}\n`) : {
+        exitCode: 1, stdout: "", stderr: "bypassPermissions mode is disabled by managed policy",
+      } });
+    await expect(provider.execute(request(repository))).rejects.toMatchObject({
+      kind: "permissions", message: expect.stringContaining("Select Ask before change"),
+    });
+  });
+
+  it("routes Ask before change through SDK permission prompts after plan approval", async () => {
+    const repository = await createCleanGitRepository();
+    repositories.push(repository);
+    let sdkCalled = false;
+    const provider = new ClaudeCliProvider({
+      config: validateConfiguration({ provider: "claude", codexProvider: "real", executionPermission: "askBeforeChange" }),
+      gateRecord,
+      runner: async (_executable, args) => {
+        if (args[0] === "--version") return result(0, `${gateRecord.version}\n`);
+        throw new Error("CLI execution should not start in Ask before change.");
+      },
+      askPermission: async () => true,
+      sdkExecution: async (_config, _request, prompt, _schema, ask) => {
+        sdkCalled = true;
+        expect(prompt).toContain("Ask for approval before changes");
+        expect(await ask("Write", "feature.ts", new AbortController().signal)).toBe(true);
+        await writeFile(`${repository}/feature.ts`, "export const feature = true;\n");
+        return JSON.stringify({ is_error: false, structured_output: {
+          summary: "Created feature.ts.", question: "", confirmed: [], fixed: [], remaining: [],
+        } });
+      },
+    });
+    const outcome = await provider.execute(request(repository));
+    expect(sdkCalled).toBe(true);
+    expect(outcome.changedPaths).toEqual(["feature.ts"]);
   });
 
   it("plans with read-only tools and carries user answers into the next proposal", async () => {

@@ -1,7 +1,9 @@
 import { OrchestratorConfig } from "../configuration/config";
 import { readGitChanges } from "../context/gitChanges";
 import { ProcessFailure, ProcessOptions, ProcessResult, runExecutable } from "../shared/process";
+import { CLAUDE_FULL_ACCESS_REJECTED, claudeBypassRejected } from "../shared/claudePermissions";
 import { AgentRequest, AgentResult, AIProvider, ClaudeGateRecord, Finding, ProviderStatus } from "../shared/types";
+import { runClaudeSdkExecution, WorkflowPermissionPrompt } from "./claudeSdkExecution";
 
 const AVAILABILITY_TIMEOUT_MS = 10_000;
 const MAX_OUTPUT_BYTES = 1_048_576;
@@ -48,6 +50,8 @@ export interface ClaudeCliProviderOptions {
   config: OrchestratorConfig;
   gateRecord?: ClaudeGateRecord;
   runner?: ClaudeCliRunner;
+  askPermission?: WorkflowPermissionPrompt;
+  sdkExecution?: typeof runClaudeSdkExecution;
 }
 
 export class ClaudeCliProvider implements AIProvider {
@@ -87,30 +91,37 @@ export class ClaudeCliProvider implements AIProvider {
       throw new ClaudeProviderError("gate_missing", "Claude CLI version changed or the settings-source gate has not passed.");
     }
     const { config } = this.options;
+    const fullAccess = config.executionPermission === "fullAccess";
     const args = [
       "--print", "--output-format", "json", "--json-schema", JSON.stringify(RESPONSE_SCHEMA),
       "--max-budget-usd", String(config.budgetGuardUsd),
       "--setting-sources", "", "--strict-mcp-config", "--disable-slash-commands",
-      "--permission-mode", "default", "--no-session-persistence",
-      "--tools", config.claudeAllowedTools.join(","),
-      "--allowedTools", config.claudeAllowedTools.join(","),
+      ...(fullAccess ? ["--dangerously-skip-permissions"] : ["--permission-mode", "default"]),
+      "--no-session-persistence",
+      "--tools", fullAccess ? "default" : config.claudeAllowedTools.join(","),
+      ...(fullAccess ? [] : ["--allowedTools", config.claudeAllowedTools.join(",")]),
       ...(config.claudeModel ? ["--model", config.claudeModel] : []),
       ...(config.claudeEffort ? ["--effort", config.claudeEffort] : []),
     ];
     let result: ProcessResult;
     try {
-      result = await this.run(config.claudeExecutable, args, {
+      if (!fullAccess) {
+        if (!this.options.askPermission) throw new ClaudeProviderError("permissions", "Ask before change needs a permission prompt in the chat or VS Code window.");
+        result = { exitCode: 0, stderr: "", stdout: await (this.options.sdkExecution ?? runClaudeSdkExecution)(config, request,
+          buildPrompt(request, true), RESPONSE_SCHEMA, this.options.askPermission) };
+      } else result = await this.run(config.claudeExecutable, args, {
         cwd: request.repository,
         timeoutMs: config.providerTimeoutMinutes * 60_000,
         gracePeriodMs: config.terminationGracePeriodMs,
         maxOutputBytes: MAX_OUTPUT_BYTES,
         signal: request.signal,
-        stdin: buildPrompt(request),
+        stdin: buildPrompt(request, false),
       });
     } catch (error) {
+      if (error instanceof ClaudeProviderError) throw error;
       throw mapProcessFailure(error);
     }
-    if (result.exitCode !== 0) throw classifyFailure(result.stderr, result.exitCode);
+    if (result.exitCode !== 0) throw classifyFailure(`${result.stderr}\n${result.stdout}`, result.exitCode);
     const parsed = parseResponse(result.stdout, request.findings ?? []);
     const changes = await readGitChanges(request.repository);
     if (request.mode === "correct" && parsed.fixed.length > 0 && changes.diff === request.diff) {
@@ -193,10 +204,12 @@ export function requiredCapabilities(help: string): string[] {
   return required.filter((flag) => !new RegExp(`(?:^|[\\s,])${flag}(?=[\\s,]|$)`, "m").test(help));
 }
 
-function buildPrompt(request: AgentRequest): string {
+function buildPrompt(request: AgentRequest, askBeforeChange: boolean): string {
   const instructions = [
-    "Work only inside this repository. Use only the pre-authorized tools that are available.",
-    "Do not use Bash, external tools, MCP, plugins, network access, or modify ignored files, secrets, credentials, or files outside the repository.",
+    askBeforeChange
+      ? "Follow the approved plan. Ask for approval before changes, commands and network tools. Do not use MCP or plugins."
+      : "Follow the approved plan. Full access was explicitly selected after plan review; commands, network and files outside the repository are allowed when the task needs them. Do not use MCP or plugins.",
+    "Report any commands, network actions or changes outside the repository. The Git diff only covers this repository.",
     "Return structured JSON matching the schema. The orchestrator computes the actual Git diff after you finish.",
   ];
   if (request.mode === "implement") {
@@ -283,6 +296,9 @@ function mapProcessFailure(error: unknown): ClaudeProviderError {
 
 function classifyFailure(diagnostics: string, exitCode: number | null): ClaudeProviderError {
   const value = diagnostics.toLowerCase();
+  if (claudeBypassRejected(diagnostics)) {
+    return new ClaudeProviderError("permissions", CLAUDE_FULL_ACCESS_REJECTED);
+  }
   if (/unauthori[sz]ed|not logged in|authentication|login required|invalid api key|401\b/.test(value)) {
     return new ClaudeProviderError("authentication", "Claude CLI authentication is unavailable.");
   }

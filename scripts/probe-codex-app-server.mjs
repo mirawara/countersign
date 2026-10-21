@@ -10,7 +10,8 @@ const live = process.argv.includes("--live");
 const cancelProbe = process.argv.includes("--cancel-probe");
 const shellInterruptProbe = process.argv.includes("--interrupt-shell-probe");
 const permissionProbe = process.argv.includes("--permission-probe");
-if ((cancelProbe || permissionProbe) && !live) {
+const fullAccessProbe = process.argv.includes("--full-access-probe");
+if ((cancelProbe || permissionProbe || fullAccessProbe) && !live) {
   throw new Error("A model turn requires --live; no inference was started.");
 }
 const login = spawnSync("codex", ["login", "status"], { encoding: "utf8", timeout: 10_000 });
@@ -168,6 +169,44 @@ try {
     console.log(JSON.stringify({ phase: "interrupt-shell-probe", interruptAccepted, finalStatus, markerAbsent, shellStopped }));
     await first.request("thread/delete", { threadId }).catch(() => {});
     if (!interruptAccepted || finalStatus !== "interrupted" || !markerAbsent || !shellStopped) process.exitCode = 1;
+  } else if (fullAccessProbe) {
+    if (!selected?.model) throw new Error("No model was returned for a live turn.");
+    const output = join(directory, "full-access-probe.txt");
+    const started = await first.request("thread/start", { cwd: directory, model: selected.model,
+      approvalPolicy: "never", sandbox: "danger-full-access" });
+    const threadId = started?.thread?.id;
+    if (typeof threadId !== "string") throw new Error("thread/start returned no thread ID.");
+    try {
+      const turn = await first.request("turn/start", { threadId,
+        input: [{ type: "text", text: "Create full-access-probe.txt in this temporary repository with exactly TEST and a newline. Use a file edit or shell tool. Reply briefly when done." }],
+        cwd: directory, model: selected.model, approvalPolicy: "never",
+        sandboxPolicy: { type: "dangerFullAccess" } }, 30_000);
+      const turnId = turn?.turn?.id;
+      if (typeof turnId !== "string") throw new Error("turn/start returned no turn ID.");
+      const deadline = Date.now() + 90_000;
+      let status = null;
+      let approvalRequests = 0;
+      while (Date.now() < deadline) {
+        const requests = first.events.filter((event) => typeof event.id === "number" &&
+          /requestApproval$/.test(event.method ?? "") && event.params?.threadId === threadId);
+        for (const event of requests) {
+          first.events.splice(first.events.indexOf(event), 1);
+          approvalRequests++;
+          first.respond(event.id, { decision: "cancel" });
+        }
+        const completed = first.events.find((event) => event.method === "turn/completed" &&
+          event.params?.threadId === threadId && event.params?.turn?.id === turnId);
+        if (completed) { status = completed.params.turn.status; break; }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      if (status === null) await first.request("turn/interrupt", { threadId, turnId }).catch(() => {});
+      const fileCreated = await readFile(output, "utf8").then((content) => content === "TEST\n").catch(() => false);
+      console.log(JSON.stringify({ phase: "full-access-probe", threadSandbox: "danger-full-access",
+        turnSandbox: "dangerFullAccess", status, approvalRequests, fileCreated }));
+      if (status !== "completed" || approvalRequests !== 0 || !fileCreated) process.exitCode = 1;
+    } finally {
+      await first.request("thread/delete", { threadId }).catch(() => {});
+    }
   } else if (permissionProbe) {
     if (!selected?.model) throw new Error("No model was returned for a live turn.");
     const attemptedFile = join(directory, "must-not-exist-after-denial");

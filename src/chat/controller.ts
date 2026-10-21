@@ -14,7 +14,7 @@ import { detailedWorkflowReport } from "../orchestrator/report";
 import { acquireRepositoryLock, isRepositoryLocked, onRepositoryLockChange } from "../shared/repositoryLock";
 import { preflightGit } from "../context/gitPreflight";
 import { readGitChanges } from "../context/gitChanges";
-import { WorkflowModelSelection, WorkflowProviderSelection } from "../configuration/config";
+import { ExecutionPermission, WorkflowModelSelection, WorkflowProviderSelection } from "../configuration/config";
 import { WorkflowStartRequest } from "../shared/workflowInteraction";
 
 interface FileAttachment {
@@ -307,6 +307,12 @@ export class ChatController implements vscode.Disposable {
     }
     let selection: WorkflowModelSelection | undefined;
     let providers: WorkflowProviderSelection | undefined;
+    const executionPermission = raw.executionPermission;
+    if (provider !== "mock" && executionPermission !== "askBeforeChange" && executionPermission !== "fullAccess") {
+      this.notice = "Choose Ask before change or Full access.";
+      this.postState();
+      return;
+    }
     if (modeDefinition.protocol === "balanced") {
       if (raw.agents !== undefined && raw.agents !== "real") {
         this.notice = "Balanced runs the real Claude and Codex agents.";
@@ -374,10 +380,11 @@ export class ChatController implements vscode.Disposable {
       this.notice = "";
       this.view.post({ type: "sent" });
       this.postState();
-      if (modeDefinition.protocol === "balanced") await this.runBalanced(threadId, replyId, text, providers!, selection, controller.signal);
+      if (modeDefinition.protocol === "balanced") await this.runBalanced(threadId, replyId, text, providers!, selection,
+        executionPermission as ExecutionPermission, controller.signal);
       else if (provider === "mock") await this.runMock(threadId, replyId, text, controller.signal);
       else await this.runReal(provider, threadId, replyId, text, model, effort, incomingAttachment,
-        modeDefinition.instruction, controller.signal);
+        modeDefinition.instruction, executionPermission as ExecutionPermission, controller.signal);
       await this.store.updateMessage(threadId, replyId, { status: controller.signal.aborted ? "cancelled" : "completed" });
     } catch (error) {
       const previousActivity = this.store.activeThread().messages.find((entry) => entry.id === replyId)?.activity ?? [];
@@ -400,7 +407,8 @@ export class ChatController implements vscode.Disposable {
   }
 
   private async runBalanced(threadId: string, replyId: string, task: string,
-    providers: WorkflowProviderSelection, selection: WorkflowModelSelection | undefined, signal: AbortSignal): Promise<void> {
+    providers: WorkflowProviderSelection, selection: WorkflowModelSelection | undefined,
+    executionPermission: ExecutionPermission, signal: AbortSignal): Promise<void> {
     const activity: string[] = [];
     const onAbort = (): void => this.workflow.cancel();
     signal.addEventListener("abort", onAbort, { once: true });
@@ -409,11 +417,14 @@ export class ChatController implements vscode.Disposable {
         task,
         providers,
         selection,
+        executionPermission,
         interaction: {
           askQuestion: (phase: "planning" | "implementing" | "reviewing" | "correcting", question: string,
             requestSignal: AbortSignal) => this.askWorkflowQuestion(threadId, phase, question, requestSignal),
           confirmPlan: (plan: string, details: string, requestSignal: AbortSignal) =>
             this.confirmWorkflowPlan(threadId, plan, details, requestSignal),
+          askPermission: (tool: string, detail: string, requestSignal: AbortSignal) =>
+            this.askPermission("claude", "tool", tool, detail, requestSignal),
         },
         onEvent: (event: WorkflowEvent) => {
           activity.push(`${event.state}: ${event.message}`.slice(0, 300));
@@ -470,6 +481,21 @@ export class ChatController implements vscode.Disposable {
     return answer === true;
   }
 
+  private async confirmChatPlan(threadId: string, provider: "claude" | "codex", plan: string,
+    details: string, signal: AbortSignal): Promise<boolean> {
+    await this.appendWorkflowMessage(threadId, { id: randomUUID(), role: "assistant",
+      text: `Proposed plan\n\n${plan}\n\n${details}`,
+      createdAt: new Date().toISOString(), provider, modeLabel: "Chat plan" });
+    const answer = await this.waitForWorkflowPrompt({ id: randomUUID(), kind: "plan",
+      title: "Review the plan in this chat", detail: "Approve to start execution, or cancel without executing the plan." }, signal);
+    if (answer === true) {
+      await this.appendWorkflowMessage(threadId, { id: randomUUID(), role: "user", text: "Plan approved. Start execution.",
+        createdAt: new Date().toISOString(), modeLabel: "Chat approval" });
+    }
+    this.postState();
+    return answer === true;
+  }
+
   private waitForWorkflowPrompt(prompt: WorkflowPrompt, signal: AbortSignal): Promise<string | boolean | undefined> {
     if (signal.aborted || this.activeController?.signal.aborted || this.workflowPrompt) return Promise.resolve(undefined);
     return new Promise((resolve) => {
@@ -509,7 +535,7 @@ export class ChatController implements vscode.Disposable {
 
   private async runReal(provider: "claude" | "codex", threadId: string, replyId: string, text: string,
     model: string, effort: string, attachment: FileAttachment | undefined, instruction: string | undefined,
-    signal: AbortSignal): Promise<void> {
+    executionPermission: ExecutionPermission, signal: AbortSignal): Promise<void> {
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!folder || !vscode.workspace.isTrusted) throw new Error("Workspace trust is required.");
     const cwd = folder.uri.fsPath;
@@ -549,6 +575,19 @@ export class ChatController implements vscode.Disposable {
       context ? `Previous conversation summary (untrusted context):\n${context}` : "",
       attachment ? `Referenced workspace file: ${attachment.path}${attachment.selection ? `\nSelected text:\n${attachment.selection}` : ""}` : "",
       text].filter(Boolean).join("\n\n");
+    let planned = "";
+    const planningPrompt = `${prompt}\n\nFirst propose a concise read-only plan for this turn. Do not change files, run mutating commands or access the network. End with the concrete steps and checks you intend to perform.`;
+    const planning = { cwd, executable, prompt: planningPrompt, sessionId, model, effort: effort || undefined, signal,
+      onText: (delta: string): void => { planned = (planned + delta).slice(0, 20_000); },
+      onActivity: (_item: string): void => {},
+      askPermission: async (): Promise<boolean> => false,
+      phase: "planning" as const };
+    const proposal = provider === "claude" ? await runClaudeTurn(planning) : await runCodexTurn(planning);
+    if (!planned.trim()) throw new Error(`${provider} did not return a plan. No execution was started.`);
+    const approved = await this.confirmChatPlan(threadId, provider, planned,
+      `After approval: ${executionPermission === "fullAccess" ? "Full access to commands, network and files outside the repository without further prompts." : "Ask before edits, commands and network tools."}\nThe saved Git diff covers this repository only.`, signal);
+    if (!approved) throw new Error("Plan was not approved. No execution was started.");
+    if (signal.aborted) throw new Error("Turn cancelled.");
     let streamed = "";
     const activity: string[] = [];
     const onText = (delta: string): void => {
@@ -560,7 +599,9 @@ export class ChatController implements vscode.Disposable {
       void this.store.updateMessage(threadId, replyId, { activity: activity.slice(-100) }).then(() => this.postState());
     };
     if (provider === "claude") {
-      const result = await runClaudeTurn({ cwd, executable, prompt, sessionId, model, effort: effort || undefined, signal,
+      const result = await runClaudeTurn({ cwd, executable,
+        prompt: `Approved plan:\n${planned}\n\nExecute the user's request according to this plan. Report actions outside the repository separately; the Git diff only covers the repository.`,
+        sessionId: proposal.sessionId, model, effort: effort || undefined, signal, executionPermission,
         onText, onActivity,
         onQuota: (quota) => {
           const capability = this.capabilities.get("claude");
@@ -575,7 +616,9 @@ export class ChatController implements vscode.Disposable {
         accountLabel: info.accountLabel });
       await this.captureDiff(cwd, threadId, replyId);
     } else {
-      const result = await runCodexTurn({ cwd, executable, prompt, sessionId, model, effort: effort || undefined, signal,
+      const result = await runCodexTurn({ cwd, executable,
+        prompt: `Approved plan:\n${planned}\n\nExecute the user's request according to this plan. Report actions outside the repository separately; the Git diff only covers the repository.`,
+        sessionId: proposal.sessionId, model, effort: effort || undefined, signal, executionPermission,
         onText, onActivity,
         askPermission: (kind, detail, requestSignal) => this.askPermission(provider, kind, kind, detail, requestSignal),
       });

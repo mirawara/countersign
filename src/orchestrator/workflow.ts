@@ -24,6 +24,7 @@ export interface WorkflowInput {
   initialMetrics?: WorkflowResult["metrics"];
   askQuestion?: (phase: "implementing" | "reviewing" | "correcting", question: string,
     signal: AbortSignal) => Promise<string | undefined>;
+  askPermission?: (tool: string, detail: string, signal: AbortSignal) => Promise<boolean>;
 }
 
 export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult> {
@@ -87,6 +88,7 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
     mock: !providerRequestAttempted,
     implementationProvider: input.config.provider,
     reviewProvider: input.config.codexProvider,
+    executionPermission: input.config.executionPermission,
     metrics,
   });
 
@@ -118,6 +120,25 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
     input.clarifications?.length ? `Planning decisions:\n${input.clarifications.map(({ question, answer }) => `Q: ${question}\nA: ${answer}`).join("\n")}` : "",
     input.plan ? `Approved plan (follow this; ask before materially changing it):\n${input.plan}` : "",
   ].filter(Boolean).join("\n\n");
+
+  const approveChecks = async (): Promise<boolean> => {
+    if (!realImplementation || input.config.executionPermission !== "askBeforeChange" ||
+      input.config.localChecks.length === 0) return true;
+    if (!input.askPermission) return false;
+    for (const check of input.config.localChecks) {
+      const before = await readGitChanges(input.repository);
+      const approved = await awaitAbortable(input.askPermission(`Local check: ${check.id}`,
+        `${check.executable} ${check.args.join(" ")}`.trim(), workflowController.signal),
+      workflowController.signal, abortFailure);
+      ensureActive();
+      const after = await readGitChanges(input.repository);
+      if (JSON.stringify(after) !== JSON.stringify(before)) {
+        throw new Error("The repository changed while waiting for local check approval. Inspect the diff before continuing.");
+      }
+      if (!approved) return false;
+    }
+    return true;
+  };
 
   try {
     ensureActive();
@@ -184,6 +205,10 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
       return makeResult("No repository changes were produced by the implementation.");
     }
 
+    if (!(await approveChecks())) {
+      emit("blocked_permissions", "A configured local check was not approved.");
+      return makeResult("A configured local check was not approved.");
+    }
     emit("running_checks", input.config.localChecks.length > 0
       ? `Running ${input.config.localChecks.length} explicitly configured local check(s).`
       : "No local checks are configured.");
@@ -331,6 +356,10 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
       ? candidates.filter((finding) => !correction.correction?.confirmed.includes(finding))
       : [];
     finalFindings = [...uncorrectableFindings, ...unconfirmed, ...remaining];
+    if (!(await approveChecks())) {
+      emit("blocked_permissions", "A configured local check was not approved after correction.");
+      return makeResult("A configured local check was not approved after correction.");
+    }
     emit("running_checks", `Re-running configured local checks after the ${realImplementation ? "actual" : "simulated"} correction.`);
     const correctionChecks = await runLocalChecks(
       input.config.localChecks,

@@ -1,4 +1,4 @@
-import { WorkflowModelSelection, WorkflowProviderSelection } from "../configuration/config";
+import { ExecutionPermission, WorkflowModelSelection, WorkflowProviderSelection } from "../configuration/config";
 import { WorkflowEvent } from "./types";
 
 export interface WorkflowStartRequest {
@@ -6,9 +6,11 @@ export interface WorkflowStartRequest {
   onEvent?: (event: WorkflowEvent) => void;
   providers?: WorkflowProviderSelection;
   selection?: WorkflowModelSelection;
+  executionPermission?: ExecutionPermission;
   interaction: {
     askQuestion: (phase: "planning" | "implementing" | "reviewing" | "correcting",
       question: string, signal: AbortSignal) => Promise<string | undefined>;
     confirmPlan: (plan: string, details: string, signal: AbortSignal) => Promise<boolean>;
+    askPermission?: (tool: string, detail: string, signal: AbortSignal) => Promise<boolean>;
   };
 }

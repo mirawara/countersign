@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { query as queryType, type Query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { ChatModelOption, ChatQuota, ChatUsage } from "./types";
-import { executableOutput, fileToolWithinWorkspace, safeSummary, subscriptionEnvironment } from "./providerUtils";
+import { ExecutionPermission } from "../configuration/config";
+import { executableOutput, safeSummary, subscriptionEnvironment } from "./providerUtils";
+import { claudeToolPolicy } from "./claudeToolPolicy";
+import { CLAUDE_FULL_ACCESS_REJECTED, claudeBypassRejected } from "../shared/claudePermissions";
 
 type Sdk = { query: typeof queryType };
 
@@ -56,6 +59,8 @@ export interface ClaudeTurn {
   onActivity: (text: string) => void;
   onQuota?: (quota: ChatQuota) => void;
   askPermission: (tool: string, detail: string, signal: AbortSignal) => Promise<boolean>;
+  phase?: "planning";
+  executionPermission?: ExecutionPermission;
 }
 
 export interface ClaudeTurnResult {
@@ -73,28 +78,39 @@ export async function runClaudeTurn(options: ClaudeTurn): Promise<ClaudeTurnResu
   options.signal.addEventListener("abort", onAbort, { once: true });
   if (options.signal.aborted) controller.abort();
   const sessionId = options.sessionId ?? randomUUID();
-  const active: Query = query({ prompt: options.prompt, options: {
+  const planning = options.phase === "planning";
+  const fullAccess = !planning && options.executionPermission === "fullAccess";
+  const tools = planning ? ["Read", "Glob", "Grep"]
+    : ["Read", "Glob", "Grep", "Edit", "Write", "Bash", "WebFetch", "WebSearch"];
+  let active: Query;
+  try { active = query({ prompt: options.prompt, options: {
     cwd: options.cwd, pathToClaudeCodeExecutable: options.executable, env: subscriptionEnvironment(),
     ...(options.sessionId ? { resume: sessionId } : { sessionId }),
     settingSources: [], strictMcpConfig: true, mcpServers: {},
-    tools: ["Read", "Glob", "Grep", "Edit", "Write"], allowedTools: [],
-    disallowedTools: ["Bash", "PowerShell", "Agent", "WebFetch", "WebSearch"],
-    permissionMode: "default", includePartialMessages: true,
+    tools, allowedTools: [],
+    disallowedTools: ["PowerShell", "Agent"],
+    permissionMode: planning ? "plan" : fullAccess ? "bypassPermissions" : "default",
+    ...(fullAccess ? { allowDangerouslySkipPermissions: true } : {}),
+    ...(!fullAccess ? { hooks: { PreToolUse: [{ hooks: [async (input: { hook_event_name: string;
+      tool_name?: string; tool_input?: unknown }) => claudeToolPolicy(options.cwd, input, !planning)] }] } } : {}),
+    includePartialMessages: true,
     model: options.model, ...(options.effort ? { effort: options.effort as "low" | "medium" | "high" | "xhigh" | "max" } : {}),
     maxTurns: 12, maxBudgetUsd: 2, abortController: controller,
-    canUseTool: async (tool, input, request) => {
+    ...(!fullAccess ? { canUseTool: async (tool: string, input: Record<string, unknown>, request: { signal: AbortSignal }) => {
       if (controller.signal.aborted || request.signal.aborted) return { behavior: "deny", message: "Turn cancelled." };
-      if (!["Read", "Glob", "Grep", "Edit", "Write"].includes(tool)) {
+      if (!tools.includes(tool)) {
         return { behavior: "deny", message: "Tool is outside the chat allowlist." };
       }
-      if (!(await fileToolWithinWorkspace(options.cwd, tool, input))) {
-        return { behavior: "deny", message: "Tool path is outside the workspace or cannot be checked." };
-      }
+      if (planning) return { behavior: "deny", message: "Planning is read-only." };
       const allowed = await options.askPermission(tool, safeSummary(input), request.signal);
       return allowed && !controller.signal.aborted && !request.signal.aborted
         ? { behavior: "allow", updatedInput: input } : { behavior: "deny", message: "Permission declined." };
-    },
-  } });
+    } } : {}),
+  } }); } catch (error) {
+    options.signal.removeEventListener("abort", onAbort);
+    if (fullAccess && claudeBypassRejected(error)) throw new Error(CLAUDE_FULL_ACCESS_REJECTED, { cause: error });
+    throw error;
+  }
   let resultSeen = false;
   let actualModel: string | undefined;
   let effectiveEffort: string | undefined;
@@ -137,6 +153,8 @@ export async function runClaudeTurn(options: ClaudeTurn): Promise<ClaudeTurnResu
       if (item.type === "result") {
         resultSeen = true;
         if (item.subtype !== "success" || item.is_error) {
+          const diagnostics = "errors" in item && Array.isArray(item.errors) ? item.errors.join(" ") : "";
+          if (fullAccess && claudeBypassRejected(diagnostics)) throw new Error(CLAUDE_FULL_ACCESS_REJECTED);
           throw new Error(`Claude turn ended: ${item.subtype}.`);
         }
         if (!textSeen && typeof item.result === "string") options.onText(item.result);
@@ -147,6 +165,9 @@ export async function runClaudeTurn(options: ClaudeTurn): Promise<ClaudeTurnResu
     if (controller.signal.aborted) throw new Error("Claude turn cancelled.");
     if (!resultSeen) throw new Error("Claude ended without a result.");
     return { sessionId, model: actualModel, effectiveEffort, usage, quota };
+  } catch (error) {
+    if (fullAccess && claudeBypassRejected(error)) throw new Error(CLAUDE_FULL_ACCESS_REJECTED, { cause: error });
+    throw error;
   } finally {
     active.close();
     options.signal.removeEventListener("abort", onAbort);

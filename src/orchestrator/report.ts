@@ -32,6 +32,7 @@ export function detailedWorkflowReport(result: WorkflowResult): string {
     `Finished: ${result.finishedAt}`,
     `Repository: ${result.repository}`,
     `Agents: ${result.implementationProvider} implementation, ${result.reviewProvider} review`,
+    `After plan approval: ${result.executionPermission === "fullAccess" ? "Full access" : "Ask before change"}`,
     result.selectedModels ? `Requested models: Claude ${result.selectedModels.claudeModel || "CLI default"} (effort ${result.selectedModels.claudeEffort || "CLI default"}); Codex ${result.selectedModels.codexModel || "CLI default"} (reasoning ${result.selectedModels.codexEffort || "CLI default"}). The workflow CLIs do not report an effective model back to this report.` : "",
     "",
     "## Timeline",
@@ -80,7 +81,7 @@ export function detailedWorkflowReport(result: WorkflowResult): string {
     ...(result.metrics.length ? result.metrics.map((item) => `- ${item.provider}: ${item.inputTokens ?? "?"} input tokens, ${item.outputTokens ?? "?"} output tokens; ${item.estimatedCostUsd ?? "unavailable"} USD API price estimate`)
       : ["Usage was not reported."]),
     "",
-    "Git-ignored files are outside this report. USD figures are provider estimates, not subscription charges.",
+    "The Git diff covers this repository only. Git-ignored files, external files, commands and network actions are not independently audited by this report. USD figures are provider estimates, not subscription charges.",
   ];
   return lines.filter((line) => line !== undefined).join("\n").slice(0, 98_000);
 }

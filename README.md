@@ -26,7 +26,7 @@ Countersign puts a persistent chat in the VS Code sidebar and lets you hand a re
 It is built around a few deliberate constraints:
 
 - **Your accounts, your login.** The extension launches the `claude` and `codex` CLIs you authenticated yourself. It ships no login, and it never reads, stores or forwards tokens, cookies or API keys. See [Your Claude and Codex accounts](#your-claude-and-codex-accounts).
-- **Nothing runs unasked.** Every write and every command surfaces as a permission request. No permission is inferred from a model's text, and a proposed command is never executed automatically.
+- **Approve the plan every time.** Real turns show a read-only plan first. After you approve it, **Ask before change** requests permission for edits, commands and network tools; **Full access** runs them without further prompts. An approved command in Ask mode can also affect files outside the repository. Choose the level before sending the task.
 - **Verifiable isolation.** Real Claude turns stay blocked until an isolation gate passes for the exact installed CLI and SDK versions.
 - **Mock-only CI.** The automated suite never sends a provider request. Live probes are separate, opt-in scripts against temporary repositories.
 
@@ -60,7 +60,7 @@ It is built around a few deliberate constraints:
 - **VS Code 1.106** or newer, with the folder opened as a **trusted** workspace.
 - **Git**, and exactly one repository root open in the window.
 - **[Claude Code CLI](https://code.claude.com/docs/en/overview)** and/or **[Codex CLI](https://learn.chatgpt.com/docs/overview)**, installed and already signed in. Verified against Claude Code 2.1.109 with Agent SDK 0.3.306, and Codex CLI 0.163.0.
-- **Node.js and npm** only to build from source or produce a VSIX.
+- **Node.js 24 LTS and npm** to build from source or produce a VSIX. CI also checks Node.js 22 LTS.
 
 ## Install
 
@@ -69,7 +69,7 @@ It is built around a few deliberate constraints:
 ```sh
 git clone https://github.com/mirawara/countersign.git
 cd countersign
-npm install
+npm ci
 npm run compile
 npm run package                                  # produces countersign-0.1.0.vsix
 code --install-extension countersign-0.1.0.vsix  # then: Developer: Reload Window
@@ -83,9 +83,9 @@ Or press <kbd>F5</kbd> in VS Code to launch an Extension Development Host.
 
 1. Open **one trusted Git repository** in VS Code — not this one, so a failed task cannot disturb the extension sources.
 2. Run **Countersign: Open Chat** (<kbd>F1</kbd>). The view opens in the Secondary Side Bar on the right.
-3. Pick a **provider**, **model** and **effort**, then send a message. **Add file** attaches the active file or your current selection as a reference.
+3. Pick a **provider**, **model**, **effort** and **After plan approval** permission level, then send a message. **Add file** attaches the active file or your current selection as a reference.
 4. For real Claude turns, run **Countersign: Verify Claude Chat Isolation** once per CLI/SDK version and confirm its two live requests. Until it passes, real Claude chat stays closed.
-5. Approve or deny each permission request as it appears. **Stop** cancels the turn and its process tree.
+5. Review and approve the plan in chat. With **Ask before change**, approve or deny tool requests as they appear. **Stop** cancels the turn and its process tree.
 
 For the full walkthrough — account setup, modes, storage, troubleshooting — read the [chat guide](docs/chat-guide.md).
 
@@ -93,8 +93,8 @@ For the full walkthrough — account setup, modes, storage, troubleshooting — 
 
 Select **Claude + Codex (Balanced)** as the mode, or run **Countersign: Start Workflow** from the Command Palette, then:
 
-1. From the sidebar, Claude proposes a read-only plan. Necessary clarification questions appear in the chat; answer there, then approve the plan in the chat. The Command Palette entry retains its settings confirmation dialog.
-2. Claude edits the repository using the approved plan and confirmed built-in tool allowlist. Bash and MCP are excluded. If an agent needs a decision during implementation, review or correction, the workflow pauses for an answer in the chat.
+1. From the sidebar, Claude proposes a read-only plan. Necessary clarification questions appear in the chat; answer there, then approve the plan in the chat. The Command Palette entry shows the plan in its confirmation dialog.
+2. Choose **Ask before change** to review Claude's edits, commands, network tools and each configured local check, or **Full access** to allow those actions, including changes outside the repository, after plan approval. MCP remains disabled. If an agent needs a decision during implementation, review or correction, the workflow pauses for an answer in the chat.
 3. Git collects the real diff; your configured local checks run against the working tree.
 4. Codex reviews that diff in a read-only sandbox and returns structured findings with evidence.
 5. Findings at or above your threshold get one Claude re-evaluation and correction pass, followed by another check run. There is no second Codex review after the correction.
@@ -108,9 +108,9 @@ The diff collector refuses excluded paths (common secret names, dependencies, bu
 | Guard | What it means |
 | --- | --- |
 | Isolation gate | Real Claude turns are blocked until a reproducible probe shows which setting sources the CLI reads and where session state is written, for the exact installed versions. The record lives in `~/.countersign/claude-gate.json` with owner-only permissions and lapses when a version changes. |
-| Explicit permissions | Chat mode asks for each write or command it supports. Balanced shows its plan, tool allowlist and configured checks before execution; approving that plan authorizes those bounded actions for the task. |
+| Explicit permissions | Every real chat turn and Balanced workflow requires plan approval before execution. Ask before change prompts for edits, commands and network tools; Claude's direct file tools are limited to the repository. An approved command or Codex escalation can still affect external files. Full access gives the agent broad access without further prompts. The repository Git diff does not audit external files or network actions. Codex stays read-only when reviewing a Balanced diff. |
 | Workspace trust | Real turns require a trusted workspace, one repository root and a verified platform. |
-| No credentials | The extension never reads, copies, stores, displays or transmits tokens, cookies, session files or API keys, and runs no telemetry. |
+| No credential handling by Countersign | The extension does not read, copy, store, display or transmit tokens, cookies, session files or API keys, and runs no telemetry. **Full access gives the provider's tools access to the host**, including files and environment variables that may contain credentials; Countersign cannot audit their use outside the repository. |
 | Bounded output | The Output Channel carries task IDs, states and bounded summaries — never prompts, diffs, finding evidence or raw check output. The detailed report stays in workspace chat history; full diffs, review details and check output open on demand and may contain sensitive repository data. |
 | Cancellation | **Stop** and **Cancel Workflow** escalate from SIGTERM to SIGKILL across the process group after a grace period. |
 
@@ -133,7 +133,8 @@ Settings live under `countersign.*`. The ones you are most likely to touch:
 | `provider` | `mock` | Implementation provider for the Command Palette workflow (`mock` or `claude`). The sidebar always uses real agents. |
 | `codexProvider` | `mock` | Review provider for the Command Palette workflow (`mock` or `real`). |
 | `claudeExecutable` / `codexExecutable` | `claude` / `codex` | Paths to the CLIs. |
-| `claudeAllowedTools` | `Read, Glob, Grep, Edit, Write` | Tools Claude may use. Bash and MCP cannot be added. |
+| `executionPermission` | `askBeforeChange` | Default for Command Palette workflows; the sidebar selector overrides it per turn. `fullAccess` grants commands, network and external file access after plan approval. |
+| `claudeAllowedTools` | `Read, Glob, Grep, Edit, Write` | Legacy bounded tool list; the two execution permission modes use their own tool policy. |
 | `localChecks` | `[]` | Checks as `{ id, executable, args }`. Never inferred from `package.json`. |
 | `findingThreshold` | `High` | Minimum severity that triggers a correction pass. |
 | `taskTimeoutMinutes`, `providerTimeoutMinutes`, `checkTimeoutMinutes` | `30`, `15`, `5` | Guard rails for the extension's loop. |
@@ -153,7 +154,7 @@ Settings live under `countersign.*`. The ones you are most likely to touch:
 ## Development
 
 ```sh
-npm install
+npm ci
 npm run compile      # tsc
 npm run lint         # eslint
 npm test             # vitest + test typecheck, no provider requests
