@@ -124,16 +124,30 @@ describe("VS Code command entry", () => {
     vi.spyOn(ClaudeCliProvider.prototype, "proposePlan").mockResolvedValue({ plan: "Change feature.ts.", questions: [] });
     const execute = vi.spyOn(ClaudeCliProvider.prototype, "execute");
     const runtime = new ExtensionRuntime({ subscriptions: [], workspaceState: { get: () => undefined, update: () => Promise.resolve() } } as unknown as vscode.ExtensionContext);
-    const result = await runtime.startChatWorkflow({ task: "Change feature", providers: { provider: "claude", codexProvider: "real" },
+    await expect(runtime.startChatWorkflow({ task: "Change feature", providers: { provider: "claude", codexProvider: "real" },
       executionPermission: "fullAccess", interaction: {
         askQuestion: async () => undefined,
         confirmPlan: async (_plan, details) => {
           expect(details).toContain("Full access");
           return false;
         },
-      } });
-    expect(result).toBeUndefined();
+      } })).rejects.toThrow("Plan was declined. No execution was started.");
     expect(execute).not.toHaveBeenCalled();
+    runtime.dispose();
+  });
+
+  it("shows the Git preflight reason in chat when a repository has changes", async () => {
+    repository = await createCleanGitRepository();
+    await writeFile(join(repository, "pending.txt"), "Uncommitted work.\n");
+    const runtime = new ExtensionRuntime({ subscriptions: [], workspaceState: {
+      get: () => undefined, update: () => Promise.resolve(),
+    } } as unknown as vscode.ExtensionContext);
+    const confirmPlan = vi.fn(async () => true);
+    await expect(runtime.startChatWorkflow({ task: "Change feature",
+      providers: { provider: "mock", codexProvider: "mock" },
+      interaction: { askQuestion: async () => undefined, confirmPlan },
+    })).rejects.toThrow("The repository has 1 tracked or untracked change(s). Commit or move them before starting.");
+    expect(confirmPlan).not.toHaveBeenCalled();
     runtime.dispose();
   });
 });

@@ -22,6 +22,10 @@ All notable changes to this project are documented here. The format follows [Kee
 - The mock provider is no longer offered in the sidebar. It remains an internal command used by the packaged integration test, and as a settings-only path for the Command Palette workflow's test cases.
 - `Balanced` from the sidebar always runs the real Claude and Codex pair.
 
+### Fixed
+
+- Balanced now shows the actual preflight or provider startup error in the chat instead of a generic start failure.
+
 ### Known limitations
 
 - Linux only: macOS is unverified, and Windows execution stays blocked until process-tree cancellation exists there.

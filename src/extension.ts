@@ -18,6 +18,7 @@ import { WorkflowStartRequest } from "./shared/workflowInteraction";
 export class ExtensionRuntime {
   private readonly output = vscode.window.createOutputChannel("Countersign");
   private currentState: WorkflowState = "idle";
+  private lastStartIssue: string | undefined;
   private activeController: AbortController | undefined;
   private latestResult: WorkflowResult | undefined;
 
@@ -41,8 +42,10 @@ export class ExtensionRuntime {
     this.activeController?.abort();
   }
 
-  startChatWorkflow(request: WorkflowStartRequest): Promise<WorkflowResult | undefined> {
-    return this.startWorkflow(request);
+  async startChatWorkflow(request: WorkflowStartRequest): Promise<WorkflowResult> {
+    const result = await this.startWorkflow(request);
+    if (result) return result;
+    throw new Error(this.lastStartIssue ?? `Workflow stopped before execution (${this.currentState}). Check the Countersign Output Channel.`);
   }
 
   cancelChatWorkflow(): void {
@@ -52,8 +55,10 @@ export class ExtensionRuntime {
   private async startWorkflow(request?: WorkflowStartRequest): Promise<WorkflowResult | undefined> {
     if (this.activeController) {
       void vscode.window.showInformationMessage("A workflow is already running.");
+      if (request?.interaction) throw new Error("A workflow is already running.");
       return;
     }
+    this.lastStartIssue = undefined;
     const controller = new AbortController();
     this.activeController = controller;
     let releaseLock: (() => void) | undefined;
@@ -62,26 +67,30 @@ export class ExtensionRuntime {
 
       if (!vscode.workspace.isTrusted) {
         this.currentState = "blocked_untrusted_workspace";
-        void vscode.window.showWarningMessage("Trust this workspace in VS Code before starting a task.");
+        this.lastStartIssue = "Trust this workspace in VS Code before starting a task.";
+        void vscode.window.showWarningMessage(this.lastStartIssue);
         return;
       }
 
       if (process.platform === "win32") {
         this.currentState = "blocked_provider";
-        void vscode.window.showWarningMessage("Windows workflow execution is blocked until process-tree cancellation is implemented and verified.");
+        this.lastStartIssue = "Windows workflow execution is blocked until process-tree cancellation is implemented and verified.";
+        void vscode.window.showWarningMessage(this.lastStartIssue);
         return;
       }
 
       const folders = vscode.workspace.workspaceFolders;
       if (!folders || folders.length !== 1) {
         this.currentState = "failed";
-        void vscode.window.showErrorMessage("Open exactly one Git repository folder as the VS Code workspace.");
+        this.lastStartIssue = "Open exactly one Git repository folder as the VS Code workspace.";
+        void vscode.window.showErrorMessage(this.lastStartIssue);
         return;
       }
       try { releaseLock = acquireRepositoryLock(folders[0].uri.fsPath); }
       catch (error) {
         this.currentState = "blocked_provider";
-        void vscode.window.showWarningMessage(errorMessage(error));
+        this.lastStartIssue = errorMessage(error);
+        void vscode.window.showWarningMessage(this.lastStartIssue);
         return;
       }
 
@@ -91,7 +100,8 @@ export class ExtensionRuntime {
           ...(request?.executionPermission ? { executionPermission: request.executionPermission } : {}) });
       } catch (error) {
         this.currentState = "failed";
-        void vscode.window.showErrorMessage(errorMessage(error));
+        this.lastStartIssue = errorMessage(error);
+        void vscode.window.showErrorMessage(this.lastStartIssue);
         return;
       }
       if (config.provider === "claude") {
@@ -101,7 +111,8 @@ export class ExtensionRuntime {
         }).checkAvailability();
         if (!status.available) {
           this.currentState = "blocked_provider";
-          void vscode.window.showWarningMessage(`${status.reason ?? "Claude CLI is unavailable."} Run Verify Claude Settings Isolation if needed.`);
+          this.lastStartIssue = `${status.reason ?? "Claude CLI is unavailable."} Run Verify Claude Settings Isolation if needed.`;
+          void vscode.window.showWarningMessage(this.lastStartIssue);
           return;
         }
       }
@@ -121,7 +132,8 @@ export class ExtensionRuntime {
           void vscode.window.showErrorMessage(error.message);
         } else {
           this.currentState = "failed";
-          void vscode.window.showErrorMessage(errorMessage(error));
+          this.lastStartIssue = errorMessage(error);
+          void vscode.window.showErrorMessage(this.lastStartIssue);
         }
         return;
       }
@@ -134,7 +146,8 @@ export class ExtensionRuntime {
         await validateSelectedModels(config, repository, Boolean(request?.interaction));
       } catch (error) {
         this.currentState = "blocked_provider";
-        void vscode.window.showWarningMessage(errorMessage(error));
+        this.lastStartIssue = errorMessage(error);
+        void vscode.window.showWarningMessage(this.lastStartIssue);
         return;
       }
       if (controller.signal.aborted) {
@@ -214,6 +227,7 @@ export class ExtensionRuntime {
           { modal: true, detail: `${plan ? `Proposed plan:\n${plan}\n\n` : ""}${details}` }, confirmationLabel) === confirmationLabel;
       if (!confirmed) {
         this.currentState = "cancelled";
+        this.lastStartIssue = "Plan was declined. No execution was started.";
         return;
       }
       if (controller.signal.aborted) {
@@ -223,14 +237,16 @@ export class ExtensionRuntime {
 
       if (!vscode.workspace.isTrusted) {
         this.currentState = "blocked_untrusted_workspace";
-        void vscode.window.showWarningMessage("Workspace trust changed before the task started. No workflow was run.");
+        this.lastStartIssue = "Workspace trust changed before the task started. No workflow was run.";
+        void vscode.window.showWarningMessage(this.lastStartIssue);
         return;
       }
 
       const currentFolders = vscode.workspace.workspaceFolders;
       if (!currentFolders || currentFolders.length !== 1 || currentFolders[0].uri.fsPath !== folders[0].uri.fsPath) {
         this.currentState = "failed";
-        void vscode.window.showErrorMessage("The workspace changed while confirmation was open. Start again from the intended repository.");
+        this.lastStartIssue = "The workspace changed while confirmation was open. Start again from the intended repository.";
+        void vscode.window.showErrorMessage(this.lastStartIssue);
         return;
       }
 
@@ -240,12 +256,14 @@ export class ExtensionRuntime {
           ...(request?.executionPermission ? { executionPermission: request.executionPermission } : {}) });
       } catch (error) {
         this.currentState = "failed";
-        void vscode.window.showErrorMessage(errorMessage(error));
+        this.lastStartIssue = errorMessage(error);
+        void vscode.window.showErrorMessage(this.lastStartIssue);
         return;
       }
       if (JSON.stringify(currentConfig) !== JSON.stringify(config)) {
         this.currentState = "blocked_provider";
-        void vscode.window.showWarningMessage("The workflow configuration changed after it was shown. Review the settings and start again.");
+        this.lastStartIssue = "The workflow configuration changed after it was shown. Review the settings and start again.";
+        void vscode.window.showWarningMessage(this.lastStartIssue);
         return;
       }
 
@@ -258,7 +276,8 @@ export class ExtensionRuntime {
           void vscode.window.showErrorMessage(`Preflight changed before start: ${error.message}`);
         } else {
           this.currentState = "failed";
-          void vscode.window.showErrorMessage(errorMessage(error));
+          this.lastStartIssue = errorMessage(error);
+          void vscode.window.showErrorMessage(this.lastStartIssue);
         }
         return;
       }
@@ -313,6 +332,7 @@ export class ExtensionRuntime {
         return result;
       } catch (error) {
         this.currentState = "failed";
+        this.lastStartIssue = errorMessage(error);
         this.output.appendLine(`Workflow failed: ${errorMessage(error)}`);
         void vscode.window.showErrorMessage(`Workflow failed: ${errorMessage(error)}`);
       }
@@ -368,6 +388,7 @@ export class ExtensionRuntime {
   }
 
   private logState(state: WorkflowState, message: string): void {
+    this.lastStartIssue = message;
     this.output.appendLine(`[${new Date().toLocaleTimeString()}] ${state}: ${message}`);
   }
 
