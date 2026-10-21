@@ -123,7 +123,7 @@ export class ClaudeCliProvider implements AIProvider {
     }
     if (result.exitCode !== 0) throw classifyFailure(`${result.stderr}\n${result.stdout}`, result.exitCode);
     const parsed = parseResponse(result.stdout, request.findings ?? []);
-    const changes = await readGitChanges(request.repository);
+    const changes = await (request.readChanges ?? (() => readGitChanges(request.repository)))();
     if (request.mode === "correct" && parsed.fixed.length > 0 && changes.diff === request.diff) {
       throw new ClaudeProviderError("invalid_output", "Claude reported a correction but the repository diff did not change.");
     }
@@ -209,8 +209,8 @@ function buildPrompt(request: AgentRequest, askBeforeChange: boolean): string {
     askBeforeChange
       ? "Follow the approved plan. Ask for approval before changes, commands and network tools. Do not use MCP or plugins."
       : "Follow the approved plan. Full access was explicitly selected after plan review; commands, network and files outside the repository are allowed when the task needs them. Do not use MCP or plugins.",
-    "Report any commands, network actions or changes outside the repository. The Git diff only covers this repository.",
-    "Return structured JSON matching the schema. The orchestrator computes the actual Git diff after you finish.",
+    `Report any commands, network actions or changes outside the workspace. The ${request.changeSource === "snapshot" ? "file snapshot" : "Git diff"} only covers this workspace.`,
+    `Return structured JSON matching the schema. The orchestrator computes the actual ${request.changeSource === "snapshot" ? "file snapshot diff" : "Git diff"} after you finish.`,
   ];
   if (request.mode === "implement") {
     return [...instructions,
@@ -218,7 +218,7 @@ function buildPrompt(request: AgentRequest, askBeforeChange: boolean): string {
       "In summary, report each changed file, what you changed, any checks you actually ran, and remaining limitations. Do not claim checks that you did not run.",
       "Implement the following task:", request.task,
       request.clarifications?.length ? `User answers:\n${JSON.stringify(request.clarifications)}` : "",
-      request.diff ? `Changes already made during this workflow (continue from them; do not discard them):\n${request.diff}` : "",
+      request.diff ? `Current working-tree diff (may include changes from before this workflow; continue without discarding them):\n${request.diff}` : "",
       "Set confirmed, fixed and remaining to empty arrays."].filter(Boolean).join("\n\n");
   }
   const findings = (request.findings ?? []).map((finding, index) => ({ id: `f${index}`, ...finding }));

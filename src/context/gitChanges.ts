@@ -78,12 +78,13 @@ export async function readGitChanges(repository: string): Promise<GitChanges> {
   return { entries, paths, diff: parts.join("\n") };
 }
 
-function validateReviewPath(path: string): void {
+export function validateReviewPath(path: string): void {
   const normalized = path.replaceAll("\\", "/");
   const name = normalized.split("/").at(-1)?.toLowerCase() ?? "";
   if (!path || isAbsolute(path) || normalized.split("/").includes("..") || path.includes("\0") || path.includes("\n")
-    || /(^|\/)(node_modules|dist|build|coverage|\.git|\.cache)(\/|$)/i.test(normalized)
+    || /(^|\/)(node_modules|dist|build|coverage|\.git|\.cache|\.ssh|\.aws|\.gnupg)(\/|$)/i.test(normalized)
     || /^\.env(?:\.|$)/i.test(name)
+    || /^(?:\.npmrc|\.pypirc|\.netrc|id_rsa|id_ed25519)$/i.test(name)
     || /(?:^|[-_.])(?:secrets?|credentials?|tokens?|private[-_]?key)(?:[-_.]|$)|\.(?:pem|p12)$/i.test(name)) {
     throw new GitChangeError(`Changed path ${JSON.stringify(path)} is excluded from AI review.`);
   }

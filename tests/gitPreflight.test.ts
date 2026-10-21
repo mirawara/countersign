@@ -23,6 +23,9 @@ describe("Git preflight", () => {
     repositories.push(repository);
     await writeFile(join(repository, "new-file.txt"), "untracked");
     await expect(preflightGit(repository)).rejects.toMatchObject({ kind: "dirty_repository" });
+    await expect(preflightGit(repository, { allowDirty: true })).resolves.toEqual({
+      repository, dirtyEntries: ["?? new-file.txt"],
+    });
     expect(await readGitStatus(repository)).toHaveLength(1);
   });
 

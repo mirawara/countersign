@@ -21,11 +21,11 @@
 
 ---
 
-Countersign puts a persistent chat in the VS Code sidebar and lets you hand a repository task to Claude or Codex. Its point is the **`Balanced` workflow**: Claude implements the change, your configured checks run against the real working tree, and Codex reviews the actual Git diff in a read-only sandbox. "Done" means a diff that survived another agent's review, not a model saying it finished.
+Countersign puts a persistent chat in the VS Code sidebar and lets you hand a workspace task to Claude or Codex. Its point is the **`Balanced` workflow**: Claude implements the change, your configured checks run against the real files, and Codex reviews the diff in a read-only sandbox. Git folders use the diff against HEAD; other folders use a file snapshot taken before the task.
 
 It is built around a few deliberate constraints:
 
-- **Your accounts, your login.** The extension launches the `claude` and `codex` CLIs you authenticated yourself. It ships no login, and it never reads, stores or forwards tokens, cookies or API keys. See [Your Claude and Codex accounts](#your-claude-and-codex-accounts).
+- **Your accounts, your login.** The extension launches the `claude` and `codex` CLIs you authenticated yourself. It does not access their login stores for authentication. Workspace files and diffs may contain secret text, so inspect the folder before sending it to a provider. See [Your Claude and Codex accounts](#your-claude-and-codex-accounts).
 - **Approve the plan every time.** Real turns show a read-only plan first. After you approve it, **Ask before change** requests permission for edits, commands and network tools; **Full access** runs them without further prompts. An approved command in Ask mode can also affect files outside the repository. Choose the level before sending the task.
 - **Verifiable isolation.** Real Claude turns stay blocked until an isolation gate passes for the exact installed CLI and SDK versions.
 - **Mock-only CI.** The automated suite never sends a provider request. Live probes are separate, opt-in scripts against temporary repositories.
@@ -58,7 +58,7 @@ It is built around a few deliberate constraints:
 
 - **Linux.** macOS is unverified; Windows execution is blocked.
 - **VS Code 1.106** or newer, with the folder opened as a **trusted** workspace.
-- **Git**, and exactly one repository root open in the window.
+- Exactly one trusted folder open in the window. Git is optional for the folder under work; Git folders may already contain changes.
 - **[Claude Code CLI](https://code.claude.com/docs/en/overview)** and/or **[Codex CLI](https://learn.chatgpt.com/docs/overview)**, installed and already signed in. Verified against Claude Code 2.1.109 with Agent SDK 0.3.306, and Codex CLI 0.163.0.
 - **Node.js 24 LTS and npm** to build from source or produce a VSIX. CI also checks Node.js 22 LTS.
 
@@ -81,7 +81,7 @@ Or press <kbd>F5</kbd> in VS Code to launch an Extension Development Host.
 
 ## Quick start
 
-1. Open **one trusted Git repository** in VS Code — not this one, so a failed task cannot disturb the extension sources.
+1. Open **one trusted project folder** in VS Code — preferably a test folder for your first run.
 2. Run **Countersign: Open Chat** (<kbd>F1</kbd>). The view opens in the Secondary Side Bar on the right.
 3. Pick a **provider**, **model**, **effort** and **After plan approval** permission level, then send a message. **Add file** attaches the active file or your current selection as a reference.
 4. For real Claude turns, run **Countersign: Verify Claude Chat Isolation** once per CLI/SDK version and confirm its two live requests. Until it passes, real Claude chat stays closed.
@@ -95,22 +95,22 @@ Select **Claude + Codex (Balanced)** as the mode, or run **Countersign: Start Wo
 
 1. From the sidebar, Claude proposes a read-only plan. Necessary clarification questions appear in the chat; answer there, then approve the plan in the chat. The Command Palette entry shows the plan in its confirmation dialog.
 2. Choose **Ask before change** to review Claude's edits, commands, network tools and each configured local check, or **Full access** to allow those actions, including changes outside the repository, after plan approval. MCP remains disabled. If an agent needs a decision during implementation, review or correction, the workflow pauses for an answer in the chat.
-3. Git collects the real diff; your configured local checks run against the working tree.
-4. Codex reviews that diff in a read-only sandbox and returns structured findings with evidence.
+3. Git collects the real diff in a repository; in a folder without Git, Countersign compares reviewable files with a snapshot taken before planning. Your configured local checks run against the files.
+4. Codex receives Claude's completion summary as context, checks it against the actual diff and workspace files in a read-only sandbox, and returns structured findings with evidence.
 5. Findings at or above your threshold get one Claude re-evaluation and correction pass, followed by another check run. There is no second Codex review after the correction.
 
 The sidebar leaves a detailed report in the thread, including the plan, answers, changed files, checks, findings, correction and provider usage. **Show diff** on the report opens the saved patch. Questions can pause between CLI turns; an in-progress tool call cannot be interrupted for a question. If files changed before a question, the workflow checks that their Git snapshot is unchanged before it resumes.
 
-The diff collector refuses excluded paths (common secret names, dependencies, build output), binary new files, more than 40 changed files, new text files over 16 KiB and diffs over 256 KiB. Filename exclusions do not prove that no secret is present. Local checks are configured as an executable plus arguments, never inferred from repository scripts; they may change files, and real runs include those changes in the reviewed diff. The workflow never resets, stages, commits or cleans anything.
+The diff collector refuses excluded paths (common secret names, dependencies, build output), binary new files, more than 40 changed files, new text files over 16 KiB and diffs over 256 KiB. A folder without Git also has a 20,000 file / 64 MiB snapshot limit; generated directories are skipped, and changed files over 1 MiB cannot be reviewed. Filename exclusions do not prove that no secret is present. Local checks are configured as an executable plus arguments, never inferred from repository scripts; they may change files, and real runs include those changes in the reviewed diff. The workflow never resets, stages, commits or cleans anything.
 
 ## Safety model
 
 | Guard | What it means |
 | --- | --- |
 | Isolation gate | Real Claude turns are blocked until a reproducible probe shows which setting sources the CLI reads and where session state is written, for the exact installed versions. The record lives in `~/.countersign/claude-gate.json` with owner-only permissions and lapses when a version changes. |
-| Explicit permissions | Every real chat turn and Balanced workflow requires plan approval before execution. Ask before change prompts for edits, commands and network tools; Claude's direct file tools are limited to the repository. An approved command or Codex escalation can still affect external files. Full access gives the agent broad access without further prompts. The repository Git diff does not audit external files or network actions. Codex stays read-only when reviewing a Balanced diff. |
-| Workspace trust | Real turns require a trusted workspace, one repository root and a verified platform. |
-| No credential handling by Countersign | The extension does not read, copy, store, display or transmit tokens, cookies, session files or API keys, and runs no telemetry. **Full access gives the provider's tools access to the host**, including files and environment variables that may contain credentials; Countersign cannot audit their use outside the repository. |
+| Explicit permissions | Every real chat turn and Balanced workflow requires plan approval before execution. Ask before change prompts for edits, commands and network tools; Claude's direct file tools are limited to the workspace. An approved command or Codex escalation can still affect external files. Full access gives the agent broad access without further prompts. The saved workspace diff does not audit external files or network actions. Codex stays read-only when reviewing a Balanced diff. |
+| Workspace trust | Real turns require a trusted workspace, one folder and a verified platform. |
+| No login credential handling by Countersign | The extension does not access provider login stores or use API keys for authentication, and runs no telemetry. File snapshots and diffs can contain secrets embedded in workspace text files; filename exclusions cannot prevent every case. **Full access gives the provider's tools access to the host**, including files and environment variables that may contain credentials; Countersign cannot audit their use outside the workspace. |
 | Bounded output | The Output Channel carries task IDs, states and bounded summaries — never prompts, diffs, finding evidence or raw check output. The detailed report stays in workspace chat history; full diffs, review details and check output open on demand and may contain sensitive repository data. |
 | Cancellation | **Stop** and **Cancel Workflow** escalate from SIGTERM to SIGKILL across the process group after a grace period. |
 

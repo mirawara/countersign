@@ -3,8 +3,10 @@ import { ChatController } from "./chat/controller";
 import { OrchestratorConfig, validateConfiguration } from "./configuration/config";
 import { inspectClaude } from "./chat/claudeAdapter";
 import { inspectCodex } from "./chat/codexAdapter";
-import { preflightGit, GitPreflightError } from "./context/gitPreflight";
+import { GitPreflightError } from "./context/gitPreflight";
 import { runWorkflow } from "./orchestrator/workflow";
+import { GitChanges } from "./context/gitChanges";
+import { createWorkspaceChanges, WorkspaceChanges } from "./context/workspaceChanges";
 import { summarizeWorkflow } from "./orchestrator/report";
 import { CodexCliProvider } from "./providers/codexCliProvider";
 import { ClaudeCliProvider } from "./providers/claudeCliProvider";
@@ -82,7 +84,7 @@ export class ExtensionRuntime {
       const folders = vscode.workspace.workspaceFolders;
       if (!folders || folders.length !== 1) {
         this.currentState = "failed";
-        this.lastStartIssue = "Open exactly one Git repository folder as the VS Code workspace.";
+        this.lastStartIssue = "Open exactly one project folder as the VS Code workspace.";
         void vscode.window.showErrorMessage(this.lastStartIssue);
         return;
       }
@@ -122,9 +124,12 @@ export class ExtensionRuntime {
       }
 
       let repository: string;
+      let startingChanges: GitChanges;
+      let tracker: WorkspaceChanges;
       try {
-        const preflight = await preflightGit(folders[0].uri.fsPath);
-        repository = preflight.repository;
+        tracker = await createWorkspaceChanges(folders[0].uri.fsPath);
+        repository = tracker.root;
+        startingChanges = await tracker.read();
       } catch (error) {
         if (error instanceof GitPreflightError) {
           this.currentState = mapPreflightState(error.kind);
@@ -178,11 +183,11 @@ export class ExtensionRuntime {
         this.currentState = "awaiting_input";
         const planner = new ClaudeCliProvider({ config, gateRecord: await loadClaudeGateRecord() });
         for (let round = 0; round < 4; round++) {
-          await preflightGit(repository);
+          await assertStartingChanges(tracker, startingChanges);
           const proposal = await planner.proposePlan(repository, task.trim(),
             clarifications.map(({ question, answer }) => ({ question, answer })), controller.signal);
           if (proposal.metrics) planningMetrics.push({ provider: "claude-planning", ...proposal.metrics });
-          await preflightGit(repository);
+          await assertStartingChanges(tracker, startingChanges);
           if (controller.signal.aborted) { this.currentState = "cancelled"; return; }
           if (proposal.questions.length === 0) { plan = proposal.plan.trim(); break; }
           for (const question of proposal.questions) {
@@ -201,16 +206,21 @@ export class ExtensionRuntime {
         ? "none"
         : config.localChecks.map((check) => `${check.id}: ${check.executable} ${check.args.join(" ")}`.trim()).join("\n");
       const details = [
-        `Repository: ${repository}`,
+        `Workspace: ${repository}`,
+        tracker.source === "snapshot"
+          ? "No Git repository: a file snapshot was captured. The final diff covers changes since this workflow started, within the stated review limits."
+          : startingChanges.entries.length
+          ? `Existing working-tree changes: ${startingChanges.paths.join(", ")}. The final Codex review includes the full diff against HEAD, including these earlier changes; the report lists them separately.`
+          : "Existing working-tree changes: none.",
         `Task: ${task.trim()}`,
         `Claude model: ${config.provider === "claude" ? config.claudeModel || "CLI default" : "Mock"}; effort: ${config.provider === "claude" ? config.claudeEffort || "CLI default" : "Mock"}.`,
         `Codex model: ${config.codexProvider === "real" ? config.codexModel || "CLI default" : "Mock"}; reasoning effort: ${config.codexProvider === "real" ? config.codexEffort || "CLI default" : "Mock"}.`,
         config.provider === "mock" ? "Claude tools: mock uses none." : config.executionPermission === "fullAccess"
-          ? "After plan approval: Full access. Claude may run commands, use the network and change files outside the repository without further prompts. MCP remains disabled. The Git diff covers only this repository."
+          ? `After plan approval: Full access. Claude may run commands, use the network and change files outside the workspace without further prompts. MCP remains disabled. The ${tracker.source === "snapshot" ? "file snapshot" : "Git diff"} covers only this workspace.`
           : "After plan approval: Ask before change. Claude may read repository files; edits, commands and network tools ask for approval in chat or a VS Code dialog. MCP remains disabled.",
         config.provider === "mock" ? `Mock scenario: ${config.mockScenario}` : "No mock scenario is used in the real workflow.",
         `Configured local checks (${config.executionPermission === "askBeforeChange" ? "each asks for permission before running" : "these will run after approval"}):\n${checksSummary}`,
-        "Configured check processes may modify files. Real workflows include their changes in the Git diff; mock workflows fail validation if they change the repository.",
+        `Configured check processes may modify files. Real workflows include their reviewable changes in the ${tracker.source === "snapshot" ? "file snapshot diff" : "Git diff"}; mock workflows fail validation if they change the workspace.`,
         `Finding threshold for the correction path: ${config.findingThreshold}`,
         config.provider === "mock"
           ? "Implementation: mock only. Changes are simulated in memory; the mock does not edit files."
@@ -268,7 +278,7 @@ export class ExtensionRuntime {
       }
 
       try {
-        await preflightGit(currentFolders[0].uri.fsPath);
+        await assertStartingChanges(tracker, startingChanges);
       } catch (error) {
         if (error instanceof GitPreflightError) {
           this.currentState = mapPreflightState(error.kind);
@@ -316,6 +326,8 @@ export class ExtensionRuntime {
           selectedModels: { claudeModel: config.claudeModel, claudeEffort: config.claudeEffort,
             codexModel: config.codexModel, codexEffort: config.codexEffort },
           initialMetrics: planningMetrics,
+          startingChanges,
+          tracker,
           config,
           claude,
           codex,
@@ -501,6 +513,13 @@ function readConfiguration(): Record<string, unknown> {
     findingThreshold: config.get<unknown>("findingThreshold", "High"),
     terminationGracePeriodMs: config.get<unknown>("terminationGracePeriodMs", 1000),
   };
+}
+
+async function assertStartingChanges(tracker: WorkspaceChanges, starting: GitChanges): Promise<void> {
+  const current = await tracker.read();
+  if (JSON.stringify(current) !== JSON.stringify(starting)) {
+    throw new Error("The working tree changed during planning or approval. Inspect its changes before starting again.");
+  }
 }
 
 function mapPreflightState(kind: GitPreflightError["kind"]): WorkflowState {

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { OrchestratorConfig } from "../configuration/config";
-import { GitPreflightError, preflightGit, readGitStatus } from "../context/gitPreflight";
-import { readGitChanges } from "../context/gitChanges";
+import { GitChanges } from "../context/gitChanges";
+import { createWorkspaceChanges, WorkspaceChanges } from "../context/workspaceChanges";
 import { ProcessFailure } from "../shared/process";
 import { AgentResult, AIProvider, CheckResult, Finding, FindingSeverity, WorkflowEvent, WorkflowResult, WorkflowState } from "../shared/types";
 import { runLocalChecks } from "./localChecks";
@@ -22,6 +22,8 @@ export interface WorkflowInput {
   clarifications?: WorkflowResult["clarifications"];
   selectedModels?: WorkflowResult["selectedModels"];
   initialMetrics?: WorkflowResult["metrics"];
+  startingChanges?: GitChanges;
+  tracker?: WorkspaceChanges;
   askQuestion?: (phase: "implementing" | "reviewing" | "correcting", question: string,
     signal: AbortSignal) => Promise<string | undefined>;
   askPermission?: (tool: string, detail: string, signal: AbortSignal) => Promise<boolean>;
@@ -34,6 +36,12 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
   const metrics: WorkflowResult["metrics"] = [...(input.initialMetrics ?? [])];
   const events: WorkflowEvent[] = [];
   let workingTreeEntries: string[] = [];
+  let startingChanges: GitChanges | undefined = input.startingChanges;
+  let tracker: WorkspaceChanges | undefined = input.tracker;
+  const readChanges = async (): Promise<GitChanges> => {
+    tracker ??= await createWorkspaceChanges(input.repository);
+    return tracker.read();
+  };
   let state: WorkflowState = "awaiting_confirmation";
   let simulatedDiff: string | undefined;
   let diff: string | undefined;
@@ -84,6 +92,8 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
     findings: finalFindings,
     checks,
     workingTreeEntries,
+    startingWorkingTreeEntries: startingChanges?.entries ?? [],
+    changeSource: tracker?.source,
     message,
     mock: !providerRequestAttempted,
     implementationProvider: input.config.provider,
@@ -126,12 +136,12 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
       input.config.localChecks.length === 0) return true;
     if (!input.askPermission) return false;
     for (const check of input.config.localChecks) {
-      const before = await readGitChanges(input.repository);
+      const before = await readChanges();
       const approved = await awaitAbortable(input.askPermission(`Local check: ${check.id}`,
         `${check.executable} ${check.args.join(" ")}`.trim(), workflowController.signal),
       workflowController.signal, abortFailure);
       ensureActive();
-      const after = await readGitChanges(input.repository);
+      const after = await readChanges();
       if (JSON.stringify(after) !== JSON.stringify(before)) {
         throw new Error("The repository changed while waiting for local check approval. Inspect the diff before continuing.");
       }
@@ -142,16 +152,13 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
 
   try {
     ensureActive();
-    try {
-      await preflightGit(input.repository);
-    } catch (error) {
-      if (error instanceof GitPreflightError) {
-        emit(error.kind === "dirty_repository" ? "blocked_dirty_repository" : error.kind === "git_unavailable" ? "blocked_provider" : "failed", error.message);
-        return makeResult(error.message);
-      }
-      throw error;
-    }
+    tracker ??= await createWorkspaceChanges(input.repository);
     ensureActive();
+    const currentStart = await readChanges();
+    if (startingChanges && JSON.stringify(currentStart) !== JSON.stringify(startingChanges)) {
+      throw new Error("The working tree changed after plan approval. Inspect its changes before starting again.");
+    }
+    startingChanges = currentStart;
     const availability = await awaitAbortable(Promise.all([
       input.claude.checkAvailability(),
       input.codex.checkAvailability(),
@@ -174,16 +181,17 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
       implementation = await awaitAbortable(input.claude.execute({
         taskId, mode: "implement", repository: input.repository, task: executionTask,
         clarifications: implementationAnswers, diff: partialImplementationDiff, signal: workflowController.signal,
+        readChanges, changeSource: tracker.source,
       }), workflowController.signal, abortFailure);
       ensureActive();
       if (!implementation.question) break;
-      const changes = await readGitChanges(input.repository);
+      const changes = await readChanges();
       const snapshot = JSON.stringify({ diff: changes.diff, entries: changes.entries });
       partialImplementationDiff = changes.diff;
       await askQuestion("implementing", changes.paths.length
-        ? `${implementation.question}\n\nClaude has already changed ${changes.paths.length} file(s). Those changes will be kept while you answer.`
+        ? `${implementation.question}\n\nThe working tree currently has ${changes.paths.length} changed file(s), including any changes from before this workflow. They will be kept while you answer.`
         : implementation.question, implementationAnswers);
-      const current = await readGitChanges(input.repository);
+      const current = await readChanges();
       if (JSON.stringify({ diff: current.diff, entries: current.entries }) !== snapshot) {
         throw new Error("The repository changed while waiting for an implementation answer. Inspect the diff before continuing.");
       }
@@ -192,7 +200,7 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
     implementationSummary = implementation.message;
     if (implementation.metrics) metrics.push({ provider: input.claude.id, ...implementation.metrics });
     if (realImplementation) {
-      const changes = await readGitChanges(input.repository);
+      const changes = await readChanges();
       workingTreeEntries = changes.entries;
       diff = changes.diff;
       changedPaths = changes.paths;
@@ -200,7 +208,7 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
       simulatedDiff = implementation.simulatedDiff;
       changedPaths = implementation.changedPaths ?? [];
     }
-    if (realImplementation ? changedPaths.length === 0 : !implementation.changed) {
+    if (realImplementation ? JSON.stringify(await readChanges()) === JSON.stringify(startingChanges) : !implementation.changed) {
       emit("no_changes", "Implementation produced no repository changes.");
       return makeResult("No repository changes were produced by the implementation.");
     }
@@ -221,19 +229,19 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
     );
     checks.push(...initialChecks);
     if (realImplementation) {
-      const changes = await readGitChanges(input.repository);
+      const changes = await readChanges();
       workingTreeEntries = changes.entries;
       diff = changes.diff;
       changedPaths = changes.paths;
     } else {
-      workingTreeEntries = await readGitStatus(input.repository);
+      workingTreeEntries = await (await readChanges()).entries;
     }
     ensureActive();
     if (initialChecks.some((check) => !check.passed)) {
       emit("validation_failed", "One or more configured local checks failed.");
       return makeResult(`Validation failed after the ${realImplementation ? "implementation" : "simulated implementation"}.`);
     }
-    if (!realImplementation && workingTreeEntries.length > 0) {
+    if (!realImplementation && JSON.stringify(await readChanges()) !== JSON.stringify(startingChanges)) {
       emit("validation_failed", "A local check modified the repository during a mock workflow.");
       return makeResult("Local checks changed repository files; the mock diff cannot review those changes.");
     }
@@ -253,13 +261,15 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
         review = await awaitAbortable(input.codex.execute({
           taskId, mode: "review", repository: input.repository, task: executionTask,
           diff, simulatedDiff, clarifications: reviewAnswers, signal: workflowController.signal,
+          changeSource: tracker.source,
+          implementationSummary, preExistingPaths: startingChanges?.paths,
         }), workflowController.signal, abortFailure);
         ensureActive();
         if (!review.question) break;
-        const beforeAnswer = realImplementation ? await readGitChanges(input.repository) : undefined;
+        const beforeAnswer = realImplementation ? await readChanges() : undefined;
         await askQuestion("reviewing", review.question, reviewAnswers);
         if (beforeAnswer) {
-          const afterAnswer = await readGitChanges(input.repository);
+          const afterAnswer = await readChanges();
           if (JSON.stringify(afterAnswer) !== JSON.stringify(beforeAnswer)) {
             throw new Error("The repository changed while waiting for a review answer. Inspect the diff before continuing.");
           }
@@ -330,17 +340,17 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
       correction = await awaitAbortable(input.claude.execute({
         taskId, mode: "correct", repository: input.repository, task: executionTask,
         diff: partialCorrectionDiff, simulatedDiff, findings: candidates, clarifications: correctionAnswers,
-        signal: workflowController.signal,
+        signal: workflowController.signal, readChanges, changeSource: tracker.source,
       }), workflowController.signal, abortFailure);
       ensureActive();
       if (!correction.question) break;
-      const changes = await readGitChanges(input.repository);
+      const changes = await readChanges();
       const snapshot = JSON.stringify({ diff: changes.diff, entries: changes.entries });
       partialCorrectionDiff = changes.diff;
       await askQuestion("correcting", changes.diff !== diff
         ? `${correction.question}\n\nClaude has already changed files during correction. Those changes will be kept while you answer.`
         : correction.question, correctionAnswers);
-      const current = await readGitChanges(input.repository);
+      const current = await readChanges();
       if (JSON.stringify({ diff: current.diff, entries: current.entries }) !== snapshot) {
         throw new Error("The repository changed while waiting for a correction answer. Inspect the diff before continuing.");
       }
@@ -370,19 +380,19 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
     );
     checks.push(...correctionChecks);
     if (realImplementation) {
-      const changes = await readGitChanges(input.repository);
+      const changes = await readChanges();
       workingTreeEntries = changes.entries;
       diff = changes.diff;
       changedPaths = changes.paths;
     } else {
-      workingTreeEntries = await readGitStatus(input.repository);
+      workingTreeEntries = await (await readChanges()).entries;
     }
     ensureActive();
     if (correctionChecks.some((check) => !check.passed)) {
       emit("validation_failed", "One or more configured local checks failed after correction.");
       return makeResult(`Validation failed after the ${realImplementation ? "correction" : "simulated correction"}.`);
     }
-    if (!realImplementation && workingTreeEntries.length > 0) {
+    if (!realImplementation && JSON.stringify(await readChanges()) !== JSON.stringify(startingChanges)) {
       emit("validation_failed", "A local check modified the repository during a mock workflow.");
       return makeResult("Local checks changed repository files; the mock diff cannot review those changes.");
     }
@@ -398,11 +408,11 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
   } catch (error) {
     if (realImplementation) {
       try {
-        const changes = await readGitChanges(input.repository);
+        const changes = await readChanges();
         workingTreeEntries = changes.entries;
         diff = changes.diff;
       } catch {
-        try { workingTreeEntries = await readGitStatus(input.repository); } catch { /* Preserve the original failure. */ }
+        try { workingTreeEntries = await (await readChanges()).entries; } catch { /* Preserve the original failure. */ }
       }
     }
     if (timedOut || (error instanceof ProcessFailure && error.kind === "timed_out")) {

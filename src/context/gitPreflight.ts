@@ -16,7 +16,7 @@ export interface GitPreflightResult {
   dirtyEntries: string[];
 }
 
-export async function preflightGit(workspacePath: string): Promise<GitPreflightResult> {
+export async function preflightGit(workspacePath: string, options: { allowDirty?: boolean } = {}): Promise<GitPreflightResult> {
   let workspaceRealPath: string;
   try {
     workspaceRealPath = await realpath(workspacePath);
@@ -54,7 +54,7 @@ export async function preflightGit(workspacePath: string): Promise<GitPreflightR
 
   try {
     const dirtyEntries = await readGitStatus(topLevel);
-    if (dirtyEntries.length > 0) {
+    if (dirtyEntries.length > 0 && !options.allowDirty) {
       throw new GitPreflightError(
         "dirty_repository",
         `The repository has ${dirtyEntries.length} tracked or untracked change(s). Commit or move them before starting.`,

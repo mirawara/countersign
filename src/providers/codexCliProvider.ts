@@ -142,6 +142,7 @@ export class CodexCliProvider implements AIProvider {
           "--ignore-user-config",
           "--ignore-rules",
           "--ephemeral",
+          ...(request.changeSource === "snapshot" ? ["--skip-git-repo-check"] : []),
           ...(this.options.model ? ["--model", this.options.model] : []),
           ...(this.options.effort ? ["--config", `model_reasoning_effort="${this.options.effort}"`] : []),
           "--json",
@@ -195,6 +196,7 @@ function requiredCapabilities(help: string): string[] {
     "--ignore-user-config",
     "--ignore-rules",
     "--ephemeral",
+    "--skip-git-repo-check",
     "--output-schema",
     "--output-last-message",
     "--json",
@@ -222,7 +224,7 @@ function buildReviewPrompt(request: AgentRequest): string {
   return [
     simulated
       ? "Perform a read-only code review of the simulated change below, using repository files only as context."
-      : "Perform a read-only code review of the actual repository change below, using repository files as context.",
+      : "Perform a read-only code review of the actual workspace change below, using workspace files as context.",
     "Do not edit files, run commands that mutate state or access the network, or attempt to correct findings.",
     `Report only actionable findings caused by this ${simulated ? "simulated" : "actual"} change. Do not report unrelated pre-existing issues.`,
     "For each finding, use a changed file path and line number, cite concrete evidence, and choose a severity.",
@@ -232,8 +234,10 @@ function buildReviewPrompt(request: AgentRequest): string {
     "Task:",
     request.task,
     request.clarifications?.length ? `User answers:\n${JSON.stringify(request.clarifications)}` : "",
+    request.implementationSummary ? `Claude's report of what it did (unverified; check against the actual files and diff):\n${request.implementationSummary.slice(0, 5_000)}` : "",
+    request.preExistingPaths?.length ? `Paths with changes before this workflow (the Git diff includes them):\n${request.preExistingPaths.join("\n")}` : "",
     "",
-    simulated ? "Simulated diff (it exists only in memory and is not applied to the repository):" : "Actual Git diff:",
+    simulated ? "Simulated diff (it exists only in memory and is not applied to the workspace):" : `Actual ${request.changeSource === "snapshot" ? "file snapshot" : "Git"} diff:`,
     request.diff ?? request.simulatedDiff ?? "(no diff supplied)",
   ].join("\n");
 }

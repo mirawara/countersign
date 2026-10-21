@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type * as vscode from "vscode";
 import { createCleanGitRepository, removeRepository } from "./helpers/git";
@@ -78,6 +79,7 @@ describe("VS Code command entry", () => {
 
   it("asks and approves a read-only plan through the chat callbacks without a modal", async () => {
     repository = await createCleanGitRepository();
+    await writeFile(join(repository, "existing.txt"), "Earlier work.\n");
     vi.spyOn(claudeChatAdapter, "inspectClaude").mockResolvedValue({ version: "2.1.109 (Claude Code)",
       accountLabel: "Claude subscription", models: [] });
     vi.spyOn(codexChatAdapter, "inspectCodex").mockResolvedValue({ version: "codex-cli 0.163.0",
@@ -101,6 +103,7 @@ describe("VS Code command entry", () => {
         confirmPlan: async (plan: string, details: string) => {
           offeredPlan = plan;
           expect(details).toContain("Add a format");
+          expect(details).toContain("existing.txt");
           return true;
         },
       },
@@ -110,6 +113,9 @@ describe("VS Code command entry", () => {
     expect(propose).toHaveBeenCalledTimes(2);
     expect(result?.state).toBe("completed_clean");
     expect(result?.plan).toBe(offeredPlan);
+    expect(result?.startingWorkingTreeEntries).toContain("?? existing.txt");
+    expect(result?.diff).toContain("existing.txt");
+    expect(result?.diff).toContain("feature.ts");
     expect(warnings).toEqual([]);
     runtime.dispose();
   });
@@ -136,18 +142,94 @@ describe("VS Code command entry", () => {
     runtime.dispose();
   });
 
-  it("shows the Git preflight reason in chat when a repository has changes", async () => {
+  it("starts a mock workflow with existing uncommitted files", async () => {
     repository = await createCleanGitRepository();
     await writeFile(join(repository, "pending.txt"), "Uncommitted work.\n");
     const runtime = new ExtensionRuntime({ subscriptions: [], workspaceState: {
       get: () => undefined, update: () => Promise.resolve(),
     } } as unknown as vscode.ExtensionContext);
     const confirmPlan = vi.fn(async () => true);
-    await expect(runtime.startChatWorkflow({ task: "Change feature",
+    const result = await runtime.startChatWorkflow({ task: "Change feature",
       providers: { provider: "mock", codexProvider: "mock" },
       interaction: { askQuestion: async () => undefined, confirmPlan },
-    })).rejects.toThrow("The repository has 1 tracked or untracked change(s). Commit or move them before starting.");
-    expect(confirmPlan).not.toHaveBeenCalled();
+    });
+    expect(confirmPlan).toHaveBeenCalledOnce();
+    expect(result?.state).toBe("completed_clean");
+    expect(result?.startingWorkingTreeEntries).toContain("?? pending.txt");
+    runtime.dispose();
+  });
+
+  it("starts a workflow in a folder without Git", async () => {
+    repository = await mkdtemp(join(tmpdir(), "countersign-no-git-"));
+    await writeFile(join(repository, "existing.txt"), "Original work.\n");
+    const runtime = new ExtensionRuntime({ subscriptions: [], workspaceState: {
+      get: () => undefined, update: () => Promise.resolve(),
+    } } as unknown as vscode.ExtensionContext);
+    const result = await runtime.startChatWorkflow({ task: "Change feature",
+      providers: { provider: "mock", codexProvider: "mock" },
+      interaction: { askQuestion: async () => undefined, confirmPlan: async (_plan, details) => {
+        expect(details).toContain("No Git repository");
+        return true;
+      } },
+    });
+    expect(result?.state).toBe("completed_clean");
+    expect(result?.changeSource).toBe("snapshot");
+    runtime.dispose();
+  });
+
+  it("reviews a real file diff in a folder without Git", async () => {
+    repository = await mkdtemp(join(tmpdir(), "countersign-no-git-"));
+    await writeFile(join(repository, "existing.txt"), "Before.\n");
+    vi.spyOn(claudeChatAdapter, "inspectClaude").mockResolvedValue({ version: "2.1.109 (Claude Code)",
+      accountLabel: "Claude subscription", models: [] });
+    vi.spyOn(codexChatAdapter, "inspectCodex").mockResolvedValue({ version: "codex-cli 0.163.0",
+      accountLabel: "ChatGPT subscription", models: [] });
+    vi.spyOn(ClaudeCliProvider.prototype, "checkAvailability").mockResolvedValue({ available: true });
+    vi.spyOn(CodexCliProvider.prototype, "checkAvailability").mockResolvedValue({ available: true });
+    vi.spyOn(ClaudeCliProvider.prototype, "proposePlan").mockResolvedValue({ plan: "Update existing.txt.", questions: [] });
+    vi.spyOn(ClaudeCliProvider.prototype, "execute").mockImplementation(async (request) => {
+      await writeFile(join(request.repository, "existing.txt"), "After.\n");
+      return { changed: true, changedPaths: ["existing.txt"], findings: [], message: "Updated existing.txt." };
+    });
+    const review = vi.spyOn(CodexCliProvider.prototype, "execute").mockResolvedValue({ changed: false, findings: [], message: "No findings." });
+    const runtime = new ExtensionRuntime({ subscriptions: [], workspaceState: {
+      get: () => undefined, update: () => Promise.resolve(),
+    } } as unknown as vscode.ExtensionContext);
+    const result = await runtime.startChatWorkflow({ task: "Update the file",
+      providers: { provider: "claude", codexProvider: "real" },
+      interaction: { askQuestion: async () => undefined, confirmPlan: async () => true },
+    });
+    expect(result?.state).toBe("completed_clean");
+    expect(result?.diff).toContain("-Before.");
+    expect(result?.diff).toContain("+After.");
+    expect(review.mock.calls[0][0].changeSource).toBe("snapshot");
+    runtime.dispose();
+  });
+
+  it("stops when existing work changes while its plan is awaiting approval", async () => {
+    repository = await createCleanGitRepository();
+    await writeFile(join(repository, "existing.txt"), "Original work.\n");
+    vi.spyOn(claudeChatAdapter, "inspectClaude").mockResolvedValue({ version: "2.1.109 (Claude Code)",
+      accountLabel: "Claude subscription", models: [] });
+    vi.spyOn(codexChatAdapter, "inspectCodex").mockResolvedValue({ version: "codex-cli 0.163.0",
+      accountLabel: "ChatGPT subscription", models: [] });
+    vi.spyOn(ClaudeCliProvider.prototype, "checkAvailability").mockResolvedValue({ available: true });
+    vi.spyOn(ClaudeCliProvider.prototype, "proposePlan").mockResolvedValue({ plan: "Continue earlier work.", questions: [] });
+    const execute = vi.spyOn(ClaudeCliProvider.prototype, "execute");
+    const runtime = new ExtensionRuntime({ subscriptions: [], workspaceState: {
+      get: () => undefined, update: () => Promise.resolve(),
+    } } as unknown as vscode.ExtensionContext);
+    await expect(runtime.startChatWorkflow({ task: "Continue earlier work",
+      providers: { provider: "claude", codexProvider: "real" },
+      interaction: {
+        askQuestion: async () => undefined,
+        confirmPlan: async () => {
+          await writeFile(join(repository, "existing.txt"), "Changed during approval.\n");
+          return true;
+        },
+      },
+    })).rejects.toThrow("The working tree changed during planning or approval.");
+    expect(execute).not.toHaveBeenCalled();
     runtime.dispose();
   });
 });

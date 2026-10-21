@@ -12,8 +12,7 @@ import { ChatView } from "./view";
 import { WorkflowEvent, WorkflowResult } from "../shared/types";
 import { detailedWorkflowReport } from "../orchestrator/report";
 import { acquireRepositoryLock, isRepositoryLocked, onRepositoryLockChange } from "../shared/repositoryLock";
-import { preflightGit } from "../context/gitPreflight";
-import { readGitChanges } from "../context/gitChanges";
+import { createWorkspaceChanges, WorkspaceChanges } from "../context/workspaceChanges";
 import { ExecutionPermission, WorkflowModelSelection, WorkflowProviderSelection } from "../configuration/config";
 import { WorkflowStartRequest } from "../shared/workflowInteraction";
 
@@ -540,9 +539,10 @@ export class ChatController implements vscode.Disposable {
     if (!folder || !vscode.workspace.isTrusted) throw new Error("Workspace trust is required.");
     const cwd = folder.uri.fsPath;
     const threadBefore = this.store.snapshot().threads.find((entry) => entry.id === threadId);
-    if (!threadBefore?.repositoryDigest) await preflightGit(cwd);
-    else {
-      const current = await readGitChanges(cwd);
+    const tracker = await createWorkspaceChanges(cwd);
+    const startingChanges = await tracker.read();
+    if (tracker.source === "git" && threadBefore?.repositoryDigest) {
+      const current = startingChanges;
       const digest = createHash("sha256").update(current.diff).digest("hex");
       if (digest !== threadBefore.repositoryDigest) {
         throw new Error("Repository changed outside this chat turn. Inspect the diff before starting another real turn.");
@@ -584,9 +584,15 @@ export class ChatController implements vscode.Disposable {
       phase: "planning" as const };
     const proposal = provider === "claude" ? await runClaudeTurn(planning) : await runCodexTurn(planning);
     if (!planned.trim()) throw new Error(`${provider} did not return a plan. No execution was started.`);
+    if (JSON.stringify(await tracker.read()) !== JSON.stringify(startingChanges)) {
+      throw new Error("Workspace changed during planning. Inspect the files before starting another turn.");
+    }
     const approved = await this.confirmChatPlan(threadId, provider, planned,
-      `After approval: ${executionPermission === "fullAccess" ? "Full access to commands, network and files outside the repository without further prompts." : "Ask before edits, commands and network tools."}\nThe saved Git diff covers this repository only.`, signal);
+      `After approval: ${executionPermission === "fullAccess" ? "Full access to commands, network and files outside the workspace without further prompts." : "Ask before edits, commands and network tools."}\nThe saved diff covers ${tracker.source === "git" ? "Git working-tree changes" : "file changes since this turn started"} in this workspace only.`, signal);
     if (!approved) throw new Error("Plan was not approved. No execution was started.");
+    if (JSON.stringify(await tracker.read()) !== JSON.stringify(startingChanges)) {
+      throw new Error("Workspace changed during plan approval. Inspect the files before starting another turn.");
+    }
     if (signal.aborted) throw new Error("Turn cancelled.");
     let streamed = "";
     const activity: string[] = [];
@@ -600,7 +606,7 @@ export class ChatController implements vscode.Disposable {
     };
     if (provider === "claude") {
       const result = await runClaudeTurn({ cwd, executable,
-        prompt: `Approved plan:\n${planned}\n\nExecute the user's request according to this plan. Report actions outside the repository separately; the Git diff only covers the repository.`,
+        prompt: `Approved plan:\n${planned}\n\nExecute the user's request according to this plan. Report actions outside the workspace separately; the saved diff only covers the workspace.`,
         sessionId: proposal.sessionId, model, effort: effort || undefined, signal, executionPermission,
         onText, onActivity,
         onQuota: (quota) => {
@@ -614,31 +620,31 @@ export class ChatController implements vscode.Disposable {
       await this.store.updateMessage(threadId, replyId, { model: result.model || model,
         effectiveEffort: result.effectiveEffort, usage: result.usage, quota: result.quota,
         accountLabel: info.accountLabel });
-      await this.captureDiff(cwd, threadId, replyId);
+      await this.captureDiff(tracker, threadId, replyId);
     } else {
       const result = await runCodexTurn({ cwd, executable,
-        prompt: `Approved plan:\n${planned}\n\nExecute the user's request according to this plan. Report actions outside the repository separately; the Git diff only covers the repository.`,
+        prompt: `Approved plan:\n${planned}\n\nExecute the user's request according to this plan. Report actions outside the workspace separately; the saved diff only covers the workspace.`,
         sessionId: proposal.sessionId, model, effort: effort || undefined, signal, executionPermission,
         onText, onActivity,
         askPermission: (kind, detail, requestSignal) => this.askPermission(provider, kind, kind, detail, requestSignal),
       });
       await this.store.setSession(threadId, provider, result.sessionId, info.accountLabel, model);
       await this.store.updateMessage(threadId, replyId, { accountLabel: info.accountLabel });
-      await this.captureDiff(cwd, threadId, replyId);
+      await this.captureDiff(tracker, threadId, replyId);
     }
   }
 
-  private async captureDiff(cwd: string, threadId: string, replyId: string): Promise<void> {
-    const changes = await readGitChanges(cwd);
+  private async captureDiff(tracker: WorkspaceChanges, threadId: string, replyId: string): Promise<void> {
+    const changes = await tracker.read();
     const digest = createHash("sha256").update(changes.diff).digest("hex");
-    if (!changes.diff) { await this.store.setRepositoryDigest(threadId, digest); return; }
+    if (!changes.diff) { if (tracker.source === "git") await this.store.setRepositoryDigest(threadId, digest); return; }
     const storage = this.context.storageUri;
     if (!storage) throw new Error("Chat artifact storage is unavailable.");
     await vscode.workspace.fs.createDirectory(storage);
     const name = `${randomUUID()}.diff`;
     await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(storage, name), Buffer.from(changes.diff, "utf8"));
     await this.store.updateMessage(threadId, replyId, { diffArtifact: name, fileRefs: changes.paths });
-    await this.store.setRepositoryDigest(threadId, digest);
+    if (tracker.source === "git") await this.store.setRepositoryDigest(threadId, digest);
   }
 
   private askPermission(provider: "claude" | "codex", kind: ChatApproval["kind"], summary: string,

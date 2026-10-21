@@ -11,7 +11,7 @@ Countersign drives two AI coding agents that **you** install and authenticate yo
 ## What the extension never does
 
 - **No login of its own.** Countersign ships no OAuth client, no sign-in button and no account service. It cannot sign you in to Claude or ChatGPT, and it does not try.
-- **No credential handling.** It does not read, copy, store, forward or display tokens, cookies, session files or API keys. There is no credential store, no secret sync and no telemetry.
+- **No login credential handling.** Countersign does not open provider login stores or use API keys for authentication. There is no credential store, no secret sync and no telemetry. Workspace files and diffs can contain secret text, so inspect them before sending a request.
 - **No silent switch to metered billing.** It never sets `ANTHROPIC_API_KEY`, never uses `--bare` (whose help states that Anthropic authentication then comes only from an API key or `apiKeyHelper`, with OAuth and keychain ignored), and never substitutes pay-per-use API credentials for a subscription seat.
 - **No quota circumvention.** There is no account rotation, no automatic failover between accounts and no retry designed to get around a usage limit. When a limit is reached, the turn stops and says so.
 

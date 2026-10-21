@@ -20,6 +20,8 @@ Options:
           Do not load user or project execpolicy rules.
       --ephemeral
           Do not persist session files.
+      --skip-git-repo-check
+          Allow running outside a Git repository.
       --output-schema <FILE>
           JSON schema for the final response.
       --output-last-message <FILE>
@@ -115,12 +117,13 @@ describe("CodexCliProvider", () => {
       },
     });
 
-    const review = await provider.execute(request());
+    const review = await provider.execute({ ...request(), implementationSummary: "Claude reports it added validation." });
 
     expect(review).toEqual({ changed: false, findings: REVIEW.findings, message: REVIEW.summary });
     expect(executedOptions?.cwd).toBe("/repo");
     expect(executedOptions?.stdin).toContain("Task:\nReview the simulated change");
     expect(executedOptions?.stdin).toContain("+const simulated = true;");
+    expect(executedOptions?.stdin).toContain("Claude reports it added validation.");
     expect(executedOptions?.timeoutMs).toBe(90_000);
     expect(executedOptions?.gracePeriodMs).toBe(750);
     expect(executedArgs.slice(0, 3)).toEqual(["exec", "--sandbox", "read-only"]);
@@ -136,6 +139,19 @@ describe("CodexCliProvider", () => {
     expect(executedArgs).not.toContain("--dangerously-bypass-approvals-and-sandbox");
     expect(schema).toMatchObject({ type: "object", additionalProperties: false });
     await expect(access(temporaryDirectory)).rejects.toThrow();
+  });
+
+  it("allows read-only review in a folder without Git", async () => {
+    let executedArgs: string[] = [];
+    const provider = new CodexCliProvider({ executable: "codex-test", timeoutMs: 60_000, gracePeriodMs: 1_000,
+      runner: async (_executable, args) => {
+        executedArgs = args;
+        await writeFile(optionValue(args, "--output-last-message"), JSON.stringify({ summary: "ok", question: "", findings: [] }));
+        return result(0, '{"type":"turn.completed"}\n');
+      },
+    });
+    await provider.execute({ ...request(), changeSource: "snapshot" });
+    expect(executedArgs).toContain("--skip-git-repo-check");
   });
 
   it("rejects output with no parseable JSONL event", async () => {

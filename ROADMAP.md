@@ -27,7 +27,7 @@ Status vocabulary: **done** means verified by a test or a reproducible probe; **
 
 ### 2. Cross-window task lock
 
-Replace the in-memory lock with a lock file under the repository's Git directory, carrying the owning window's identity, with stale-lock recovery after a crash. Exit criterion: two VS Code windows on the same repository cannot start concurrent tasks, proven by an integration case.
+Replace the in-memory lock with a cross-window lock keyed by the workspace's canonical folder path, carrying the owning window's identity and stale-lock recovery after a crash. It must also work when the folder has no Git metadata. Exit criterion: two VS Code windows on the same folder cannot start concurrent tasks, proven by an integration case.
 
 ### 3. Countersign CLI
 
@@ -36,7 +36,7 @@ A command-line entry point that runs the same orchestration without VS Code, so 
 - Shares the orchestrator, providers, gates and the repository lock with the extension; no second implementation of the protocol.
 - Non-interactive by default: the task, the mode, the checks and the permission policy come from flags or a config file, and anything that would open a dialog in the sidebar either fails fast or follows a declared policy.
 - Prints structured events (one JSON object per line) so other tools can consume a run, with a human-readable mode for direct use.
-- Same guard rails as the extension: a trusted clean repository, no credential reading, no automatic account switching, explicit confirmation before the first write unless a flag states otherwise.
+- Same guard rails as the extension: a trusted project folder with or without Git, no credential reading, no automatic account switching, and plan approval before execution.
 - Exit criteria: a run produces the same states and artefacts as the equivalent sidebar run, cancellation terminates the whole process tree, and mock cases run in CI with no provider request.
 
 ### 4. Daily use and measurement

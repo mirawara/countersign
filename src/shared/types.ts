@@ -53,7 +53,11 @@ export interface AgentRequest {
   simulatedDiff?: string;
   findings?: Finding[];
   clarifications?: { question: string; answer: string }[];
+  implementationSummary?: string;
+  preExistingPaths?: string[];
   signal: AbortSignal;
+  readChanges?: () => Promise<import("../context/gitChanges").GitChanges>;
+  changeSource?: "git" | "snapshot";
 }
 
 export interface AgentResult {
@@ -112,6 +116,8 @@ export interface WorkflowResult {
   findings: Finding[];
   checks: CheckResult[];
   workingTreeEntries: string[];
+  startingWorkingTreeEntries?: string[];
+  changeSource?: "git" | "snapshot";
   message: string;
   plan?: string;
   implementationSummary?: string;
