@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { validateConfiguration } from "../src/configuration/config";
 import { runMockWorkflow, eligibleFindings } from "../src/orchestrator/workflow";
@@ -57,7 +58,26 @@ describe("mock BALANCED workflow", () => {
   it("returns no_changes when the mock implementation is unchanged", async () => {
     const result = await runScenario("noChanges", undefined, [], "real");
     expect(result.state).toBe("no_changes");
+    expect(result.message).toContain("Codex was not called");
+    expect(result.message).toContain("Git diff is empty");
     expect(result.mock).toBe(true);
+  });
+
+  it("explains when snapshot mode sees changes only in skipped generated directories", async () => {
+    const repository = await mkdtemp(join(tmpdir(), "countersign-no-reviewable-changes-"));
+    repositories.push(repository);
+    await mkdir(join(repository, "dist"));
+    const config = validateConfiguration({ provider: "claude", codexProvider: "real" });
+    let codexCalled = false;
+    const result = await runMockWorkflow({ repository, task: "write generated output", config,
+      claude: new GeneratedOnlyImplementationProvider(),
+      codex: new CapturingReviewProvider(() => { codexCalled = true; }),
+      signal: new AbortController().signal, onEvent: () => undefined });
+    expect(result.state).toBe("no_changes");
+    expect(result.message).toContain("Snapshot mode skips");
+    expect(result.message).toContain("dist");
+    expect(result.message).toContain("Codex was not called");
+    expect(codexCalled).toBe(false);
   });
 
   it("returns failed when the mock implementation errors", async () => {
@@ -91,6 +111,7 @@ describe("mock BALANCED workflow", () => {
     const repository = await createCleanGitRepository();
     repositories.push(repository);
     const config = validateConfiguration({
+      provider: "mock", codexProvider: "mock",
       localChecks: [{
         id: "write-output",
         executable: process.execPath,
@@ -152,6 +173,7 @@ describe("mock BALANCED workflow", () => {
     repositories.push(repository);
     const counter = join(repository, ".git", "check-count");
     const config = validateConfiguration({
+      provider: "mock", codexProvider: "mock",
       localChecks: [{
         id: "count", executable: process.execPath,
         args: ["-e", `const f=${JSON.stringify(counter)};const fs=require('node:fs');fs.writeFileSync(f,String(Number(fs.existsSync(f)?fs.readFileSync(f,'utf8'):0)+1))`],
@@ -341,6 +363,16 @@ class DiskImplementationProvider implements AIProvider {
   async cancel(_taskId: string): Promise<void> {}
 }
 
+class GeneratedOnlyImplementationProvider implements AIProvider {
+  readonly id = "claude-cli";
+  async checkAvailability(): Promise<ProviderStatus> { return { available: true }; }
+  async execute(request: AgentRequest): Promise<AgentResult> {
+    await writeFile(join(request.repository, "dist", "artifact.js"), "generated\n");
+    return { changed: true, changedPaths: ["dist/artifact.js"], findings: [], message: "Wrote generated output." };
+  }
+  async cancel(_taskId: string): Promise<void> {}
+}
+
 class CapturingReviewProvider implements AIProvider {
   readonly id = "capturing-review-test";
   constructor(private readonly record: (diff: string) => void) {}
@@ -353,7 +385,7 @@ class CapturingReviewProvider implements AIProvider {
 }
 
 class RemainingFindingProvider implements AIProvider {
-  readonly id = "remaining-finding-test";
+  readonly id = "implementation-mock";
   private readonly mock = new MockProvider("implementation", "clean");
   async checkAvailability(): Promise<ProviderStatus> { return { available: true }; }
   async execute(request: AgentRequest): Promise<AgentResult> {

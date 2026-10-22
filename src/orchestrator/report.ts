@@ -5,7 +5,7 @@ export function summarizeWorkflow(result: WorkflowResult): string {
     "--- Workflow summary ---",
     `Task ID: ${result.taskId}`,
     `State: ${result.state}`,
-    `Workspace: ${result.repository} (${result.changeSource === "git" ? "Git" : "file snapshot"})`,
+    `Workspace: ${result.repository} (${changeSourceLabel(result.changeSource)})`,
     `Started: ${result.startedAt}`,
     `Finished: ${result.finishedAt}`,
     `Mode: ${result.implementationProvider} implementation + ${result.reviewProvider} review${result.mock ? " (no AI request)" : ""}`,
@@ -31,7 +31,7 @@ export function detailedWorkflowReport(result: WorkflowResult): string {
     `Task: ${result.task}`,
     `Started: ${result.startedAt}`,
     `Finished: ${result.finishedAt}`,
-    `Workspace: ${result.repository} (${result.changeSource === "git" ? "Git" : "file snapshot"})`,
+    `Workspace: ${result.repository} (${changeSourceLabel(result.changeSource)})`,
     `Agents: ${result.implementationProvider} implementation, ${result.reviewProvider} review`,
     `After plan approval: ${result.executionPermission === "fullAccess" ? "Full access" : "Ask before change"}`,
     result.selectedModels ? `Requested models: Claude ${result.selectedModels.claudeModel || "CLI default"} (effort ${result.selectedModels.claudeEffort || "CLI default"}); Codex ${result.selectedModels.codexModel || "CLI default"} (reasoning ${result.selectedModels.codexEffort || "CLI default"}). The workflow CLIs do not report an effective model back to this report.` : "",
@@ -95,4 +95,11 @@ export function detailedWorkflowReport(result: WorkflowResult): string {
     `${result.changeSource === "git" ? "The Git diff" : "The file snapshot"} covers reviewable changes in this workspace only. ${result.changeSource === "git" ? "Git-ignored files" : "Generated directories"}, external files, commands and network actions are not independently audited by this report. USD figures are provider estimates, not subscription charges.`,
   ];
   return lines.filter((line) => line !== undefined).join("\n").slice(0, 98_000);
+}
+
+function changeSourceLabel(source: WorkflowResult["changeSource"]): string {
+  if (source === "git") return "Git diff against HEAD";
+  if (source === "git-snapshot") return "Git snapshot against workflow start";
+  if (source === "snapshot") return "file snapshot without Git";
+  return "change source unavailable";
 }

@@ -54,6 +54,7 @@ In **Ask before change**, Claude requests approval before edits, commands and ne
 - A failing local check sets `validation_failed`: the workflow stops and does **not** forward the failure to Claude automatically.
 - An eligible Codex finding gets **one** Claude correction pass, after which the checks run again. No second Codex review follows. In that case `completed_clean` means the correction was declared resolved and the checks passed — not that Codex verified the corrected diff.
 - A later workflow may start with changes already present. In a clean Git folder, Codex reviews the diff against `HEAD`. In a dirty Git folder, Countersign captures a baseline and reviews only later changes; the original Git entries are listed in the report. In a folder without Git, the review compares files with the baseline captured before planning. Earlier work is excluded from review and correction.
+- Snapshot mode skips `node_modules`, `dist`, `build`, `coverage`, `.cache`, `.venv` and `target`. The same generated paths can be included by the Git diff when they are tracked in a clean Git folder, so the review scope depends on the starting state. If a snapshot run finds no reviewable changes, its `no_changes` result names this exclusion and confirms Codex was not called.
 
 ## Commands
 
@@ -76,9 +77,10 @@ Open them from the Command Palette by searching for **Countersign**.
 | --- | --- |
 | `completed_clean` | The sequence finished with no reported findings left. Check whether any test was configured, and whether a correction happened that Codex never reviewed. |
 | `completed_with_findings` | Findings remain; read them in **Show Review Details**. |
+| `no_changes` | No reviewable changes were detected, so Codex was not called. Snapshot runs name the excluded generated directories in the result message. |
 | `validation_failed` | At least one configured check failed. |
 | `blocked_provider` / `blocked_auth_or_quota` | Check the CLI, its version, the Claude gate, authentication and account availability. |
 | `cancelled` / `timed_out` | The workflow was stopped; check Git state before retrying. |
 | `review_failed` / `failed` | See the Output Channel and **Show Diagnostics** for the recorded reason. |
 
-The Output Channel shows states and summaries, not the full prompt, the complete diff or raw check output. Documents opened by the detail commands can contain source code or other sensitive information: close them when you are done. Dirty Git folders and folders without Git use a bounded file snapshot. It excludes `node_modules`, `dist`, `build`, `coverage`, `.cache`, `.venv`, and `target`; edits in those directories are absent from Codex's review and the report. Snapshot limits are 20,000 files / 64 MiB, and changed files over 1 MiB cannot be reviewed. Clean Git folders use the Git diff, which omits ignored files. `completed_clean` with no checks configured does not prove that a build or a test suite passed.
+The Output Channel shows states and summaries, not the full prompt, the complete diff or raw check output. Documents opened by the detail commands can contain source code or other sensitive information: close them when you are done. Dirty Git folders and folders without Git use a bounded file snapshot. It excludes `node_modules`, `dist`, `build`, `coverage`, `.cache`, `.venv`, and `target`; edits in those directories are absent from Codex's review and the report. A clean Git folder instead uses the Git diff, so tracked generated paths can be reviewed there. Snapshot limits are 20,000 files / 64 MiB, and changed files over 1 MiB cannot be reviewed. Clean Git folders use the Git diff, which omits ignored files. `completed_clean` with no checks configured does not prove that a build or a test suite passed.

@@ -211,8 +211,9 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
       changedPaths = implementation.changedPaths ?? [];
     }
     if (realImplementation ? JSON.stringify(await readChanges()) === JSON.stringify(startingChanges) : !implementation.changed) {
-      emit("no_changes", "Implementation produced no workspace changes.");
-      return makeResult("No workspace changes were produced by the implementation.");
+      const message = noReviewableChangesMessage(tracker?.source, "Implementation produced no reviewable changes.");
+      emit("no_changes", message);
+      return makeResult(message);
     }
 
     if (!(await approveChecks())) {
@@ -248,8 +249,9 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
       return makeResult("Local checks changed workspace files; the mock diff cannot review those changes.");
     }
     if (realImplementation && changedPaths.length === 0) {
-      emit("no_changes", "No changes remain after local checks.");
-      return makeResult("No workspace changes remain after local checks.");
+      const message = noReviewableChangesMessage(tracker?.source, "No reviewable changes remain after local checks.");
+      emit("no_changes", message);
+      return makeResult(message);
     }
 
     emit("reviewing", realReview
@@ -448,6 +450,13 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
 
 // Kept for existing embedders of the mock-only vertical slice.
 export const runMockWorkflow = runWorkflow;
+
+function noReviewableChangesMessage(source: WorkspaceChanges["source"] | undefined, lead: string): string {
+  const scope = source === "git"
+    ? "The Git diff is empty."
+    : "Snapshot mode skips node_modules, dist, build, coverage, .cache, .venv and target; changes only in those directories are outside review and reporting scope.";
+  return `${lead} ${scope} Codex was not called.`;
+}
 
 export function eligibleFindings(
   findings: Finding[],

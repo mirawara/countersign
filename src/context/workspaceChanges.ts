@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { lstat, readFile, readdir, realpath } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 import { GitChangeError, GitChanges, readGitChanges, validateReviewPath } from "./gitChanges";
@@ -10,7 +11,7 @@ export interface WorkspaceChanges {
   read(): Promise<GitChanges>;
 }
 
-type FileState = { kind: "file" | "other"; content?: Buffer; size: number; modified: number };
+type FileState = { kind: "file" | "other"; content?: Buffer; hash?: string; size: number; modified: number };
 const MAX_FILES = 40;
 const MAX_DIFF_BYTES = 262_144;
 const MAX_NEW_FILE_BYTES = 16_384;
@@ -51,13 +52,13 @@ export async function createWorkspaceChanges(folder: string): Promise<WorkspaceC
 }
 
 async function assertSnapshotStable(root: string, baseline: Map<string, FileState>): Promise<void> {
-  const changes = compare(baseline, await scan(root));
-  if (changes.paths.length > 0) {
+  const verification = await scan(root, false);
+  if (!sameSnapshot(baseline, verification)) {
     throw new Error("The workspace changed while the initial file snapshot was captured. Start again.");
   }
 }
 
-async function scan(root: string): Promise<Map<string, FileState>> {
+async function scan(root: string, retainContents = true): Promise<Map<string, FileState>> {
   const files = new Map<string, FileState>();
   let totalBytes = 0;
   async function visit(directory: string): Promise<void> {
@@ -78,7 +79,9 @@ async function scan(root: string): Promise<Map<string, FileState>> {
         if (totalBytes > MAX_SNAPSHOT_BYTES) throw new GitChangeError(`Workspace snapshot exceeds ${MAX_SNAPSHOT_BYTES} bytes. Open a smaller folder.`);
         const canonical = await realpath(absolute);
         if (!canonical.startsWith(`${root}${sep}`)) throw new GitChangeError(`File ${path} resolves outside the workspace.`);
-        state.content = await readFile(absolute);
+        const content = await readFile(absolute);
+        state.hash = createHash("sha256").update(content).digest("hex");
+        if (retainContents) state.content = content;
       }
       files.set(path, state);
     }
@@ -87,17 +90,32 @@ async function scan(root: string): Promise<Map<string, FileState>> {
   return files;
 }
 
+function sameSnapshot(before: Map<string, FileState>, after: Map<string, FileState>): boolean {
+  if (before.size !== after.size) return false;
+  for (const [path, old] of before) {
+    const current = after.get(path);
+    if (!current || old.kind !== current.kind || old.size !== current.size) return false;
+    if (old.hash && current.hash) {
+      if (old.hash !== current.hash) return false;
+    } else if (old.modified !== current.modified) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function compare(before: Map<string, FileState>, after: Map<string, FileState>): GitChanges {
   const paths = [...new Set([...before.keys(), ...after.keys()])].filter((path) => {
     const old = before.get(path), current = after.get(path);
     return !old || !current || old.kind !== current.kind || old.size !== current.size ||
-      (old.content && current.content ? !old.content.equals(current.content) : old.modified !== current.modified);
+      (old.hash && current.hash ? old.hash !== current.hash
+        : old.content && current.content ? !old.content.equals(current.content) : old.modified !== current.modified);
   }).sort();
   if (paths.length > MAX_FILES) throw new GitChangeError(`More than ${MAX_FILES} files changed. Narrow the task before review.`);
   const parts: string[] = [];
   for (const path of paths) {
     try { validateReviewPath(path); }
-    catch { throw new GitChangeError(`Changed path ${JSON.stringify(path)} is excluded from review; its contents were not read.`); }
+    catch { throw new GitChangeError(`Changed path ${JSON.stringify(path)} is excluded from AI review; its contents were not read.`); }
     const old = before.get(path), current = after.get(path);
     for (const state of [old, current]) {
       if (!state) continue;

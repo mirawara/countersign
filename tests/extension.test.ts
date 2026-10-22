@@ -116,7 +116,7 @@ describe("VS Code command entry", () => {
     expect(result?.state).toBe("completed_clean");
     expect(result?.plan).toBe(offeredPlan);
     expect(result?.startingWorkingTreeEntries).toContain("?? existing.txt");
-    expect(result?.diff).toContain("existing.txt");
+    expect(result?.diff).not.toContain("existing.txt");
     expect(result?.diff).toContain("feature.ts");
     expect(warnings).toEqual([]);
     runtime.dispose();

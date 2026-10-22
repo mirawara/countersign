@@ -205,12 +205,18 @@ export class ExtensionRuntime {
       const checksSummary = config.localChecks.length === 0
         ? "none"
         : config.localChecks.map((check) => `${check.id}: ${check.executable} ${check.args.join(" ")}`.trim()).join("\n");
+      const existingGitEntries = tracker.startingEntries.length === 0
+        ? ""
+        : `\nExisting Git entries:\n${tracker.startingEntries.slice(0, 20).map((entry) => `- ${entry}`).join("\n")}` +
+          (tracker.startingEntries.length > 20
+            ? `\n…and ${tracker.startingEntries.length - 20} more. The report lists the full set.`
+            : "");
       const details = [
         `Workspace: ${repository}`,
         tracker.source === "snapshot"
           ? "No Git repository root is open for this folder: a file snapshot was captured. Changes cannot be reverted from Countersign here. Generated directories are excluded from review and reporting."
           : tracker.source === "git-snapshot"
-          ? `Git had ${tracker.startingEntries.length} existing change(s) when this workflow began. A file snapshot records that baseline; Codex reviews only changes made after it. Earlier Git entries will be listed in the report. Generated directories are excluded from review and reporting.`
+          ? `Git had ${tracker.startingEntries.length} existing change(s) when this workflow began. A file snapshot records that baseline; Codex reviews only changes made after it. Earlier Git entries are preserved and excluded from review.${existingGitEntries}\nGenerated directories are excluded from review and reporting.`
           : "Git working tree was clean at the start of the workflow.",
         `Task: ${task.trim()}`,
         `Claude model: ${config.provider === "claude" ? config.claudeModel || "CLI default" : "Mock"}; effort: ${config.provider === "claude" ? config.claudeEffort || "CLI default" : "Mock"}.`,

@@ -81,7 +81,7 @@ Or press <kbd>F5</kbd> in VS Code to launch an Extension Development Host.
 
 ## Quick start
 
-1. Open **one trusted project folder** in VS Code — preferably a test folder for your first run.
+1. Open **one trusted project folder** in VS Code — preferably a test folder for your first run. After you approve a real Balanced plan, Claude and Codex both make provider requests, so that first run consumes quota on both accounts; Claude's planning request happens before approval.
 2. Run **Countersign: Open Chat** (<kbd>F1</kbd>). The view opens in the Secondary Side Bar on the right.
 3. Pick a **provider**, **model**, **effort** and **After plan approval** permission level, then send a message. **Add file** attaches the active file or your current selection as a reference.
 4. For real Claude turns, run **Countersign: Verify Claude Chat Isolation** once per CLI/SDK version and confirm its two live requests. Until it passes, real Claude chat stays closed.
