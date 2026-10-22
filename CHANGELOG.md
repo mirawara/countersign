@@ -29,6 +29,7 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Fixed
 
 - Balanced now shows the actual preflight or provider startup error in the chat instead of a generic start failure.
+- Dirty-workspace snapshot diffs now mark only changed lines, so earlier edits in a file touched by the task are not presented to Codex as new changes.
 
 ### Known limitations
 

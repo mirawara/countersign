@@ -18,7 +18,10 @@ const MAX_NEW_FILE_BYTES = 16_384;
 const MAX_SNAPSHOT_FILES = 20_000;
 const MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024;
 const MAX_SNAPSHOT_FILE_BYTES = 1024 * 1024;
+const MAX_DIFF_EDIT_DISTANCE = 2_048;
 const SKIP_DIRS = new Set([".git", "node_modules", "dist", "build", "coverage", ".cache", ".venv", "target"]);
+
+interface DiffOperation { kind: "equal" | "delete" | "insert"; line: string }
 
 export async function createWorkspaceChanges(folder: string): Promise<WorkspaceChanges> {
   let root: string;
@@ -130,10 +133,13 @@ function compare(before: Map<string, FileState>, after: Map<string, FileState>):
     }
     const oldText = decode(old?.content, path), newText = decode(current?.content, path);
     const oldLines = lines(oldText), newLines = lines(newText);
+    const operations = diffLines(oldLines, newLines, path);
+    // git apply strips one leading path component, so a creation or deletion needs its mode
+    // header; without it the "/dev/null" side is read as the literal path "dev/null".
     parts.push([`diff --git a/${path} b/${path}`,
+      ...(old ? [] : ["new file mode 100644"]), ...(current ? [] : ["deleted file mode 100644"]),
       `--- ${old ? `a/${path}` : "/dev/null"}`, `+++ ${current ? `b/${path}` : "/dev/null"}`,
-      `@@ -${oldLines.length ? "1" : "0"},${oldLines.length} +${newLines.length ? "1" : "0"},${newLines.length} @@`,
-      ...oldLines.map((line) => `-${line}`), ...newLines.map((line) => `+${line}`)].join("\n") + "\n");
+      ...formatHunks(operations)].join("\n") + "\n");
   }
   const diff = parts.join("\n");
   if (Buffer.byteLength(diff) > MAX_DIFF_BYTES) throw new GitChangeError(`Diff exceeds ${MAX_DIFF_BYTES} bytes. Narrow the task before review.`);
@@ -147,4 +153,111 @@ function decode(content: Buffer | undefined, path: string): string {
   catch { throw new GitChangeError(`Changed file ${path} is not UTF-8 text.`); }
 }
 
-function lines(value: string): string[] { return value ? value.replace(/\n$/, "").split("\n") : []; }
+function lines(value: string): string[] {
+  if (!value) return [];
+  const result = value.split("\n");
+  if (value.endsWith("\n")) result.pop();
+  else result[result.length - 1] += "\0";
+  return result;
+}
+
+function diffLines(before: string[], after: string[], path: string): DiffOperation[] {
+  const maxDistance = Math.min(before.length + after.length, MAX_DIFF_EDIT_DISTANCE);
+  const offset = maxDistance + 1;
+  const frontier = new Int32Array(maxDistance * 2 + 3);
+  frontier.fill(-1);
+  frontier[offset + 1] = 0;
+  const trace: Int32Array[] = [];
+
+  for (let distance = 0; distance <= maxDistance; distance++) {
+    trace.push(frontier.slice(offset - distance - 1, offset + distance + 2));
+    for (let diagonal = -distance; diagonal <= distance; diagonal += 2) {
+      const index = offset + diagonal;
+      let x = diagonal === -distance || (diagonal !== distance && frontier[index - 1] < frontier[index + 1])
+        ? frontier[index + 1]
+        : frontier[index - 1] + 1;
+      let y = x - diagonal;
+      while (x < before.length && y < after.length && before[x] === after[y]) { x++; y++; }
+      frontier[index] = x;
+      if (x >= before.length && y >= after.length) return backtrack(before, after, trace, distance);
+    }
+  }
+
+  throw new GitChangeError(`File ${path} has too many line edits for a safe snapshot review. Split the task before review.`);
+}
+
+function backtrack(before: string[], after: string[], trace: Int32Array[], distance: number): DiffOperation[] {
+  let x = before.length;
+  let y = after.length;
+  const reversed: DiffOperation[] = [];
+  for (let step = distance; step > 0; step--) {
+    const previous = trace[step];
+    const diagonal = x - y;
+    const left = previous[diagonal - 1 + step + 1];
+    const right = previous[diagonal + 1 + step + 1];
+    const previousDiagonal = diagonal === -step || (diagonal !== step && left < right)
+      ? diagonal + 1
+      : diagonal - 1;
+    const previousX = previous[previousDiagonal + step + 1];
+    const previousY = previousX - previousDiagonal;
+    while (x > previousX && y > previousY) {
+      reversed.push({ kind: "equal", line: before[x - 1] });
+      x--; y--;
+    }
+    if (x === previousX) {
+      reversed.push({ kind: "insert", line: after[y - 1] });
+      y--;
+    } else {
+      reversed.push({ kind: "delete", line: before[x - 1] });
+      x--;
+    }
+  }
+  while (x > 0 && y > 0) {
+    reversed.push({ kind: "equal", line: before[x - 1] });
+    x--; y--;
+  }
+  while (x > 0) reversed.push({ kind: "delete", line: before[--x] });
+  while (y > 0) reversed.push({ kind: "insert", line: after[--y] });
+  return reversed.reverse();
+}
+
+function formatHunks(operations: DiffOperation[]): string[] {
+  const changed: number[] = [];
+  for (let index = 0; index < operations.length; index++) {
+    if (operations[index].kind !== "equal") changed.push(index);
+  }
+  if (changed.length === 0) return [];
+
+  const ranges: { start: number; end: number }[] = [];
+  for (const index of changed) {
+    const start = Math.max(0, index - 3);
+    const end = Math.min(operations.length, index + 4);
+    const previous = ranges.at(-1);
+    if (previous && start <= previous.end) previous.end = Math.max(previous.end, end);
+    else ranges.push({ start, end });
+  }
+
+  const oldLinesBefore = new Uint32Array(operations.length + 1);
+  const newLinesBefore = new Uint32Array(operations.length + 1);
+  for (let index = 0; index < operations.length; index++) {
+    const kind = operations[index].kind;
+    oldLinesBefore[index + 1] = oldLinesBefore[index] + (kind === "insert" ? 0 : 1);
+    newLinesBefore[index + 1] = newLinesBefore[index] + (kind === "delete" ? 0 : 1);
+  }
+
+  return ranges.map(({ start, end }) => {
+    const oldCount = oldLinesBefore[end] - oldLinesBefore[start];
+    const newCount = newLinesBefore[end] - newLinesBefore[start];
+    const oldStart = oldCount === 0 ? oldLinesBefore[start] : oldLinesBefore[start] + 1;
+    const newStart = newCount === 0 ? newLinesBefore[start] : newLinesBefore[start] + 1;
+    const lines = [`@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`];
+    for (let index = start; index < end; index++) {
+      const operation = operations[index];
+      const prefix = operation.kind === "equal" ? " " : operation.kind === "delete" ? "-" : "+";
+      const unterminated = operation.line.endsWith("\0");
+      lines.push(`${prefix}${unterminated ? operation.line.slice(0, -1) : operation.line}`);
+      if (unterminated) lines.push("\\ No newline at end of file");
+    }
+    return lines.join("\n");
+  });
+}
