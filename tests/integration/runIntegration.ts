@@ -107,10 +107,10 @@ interface Options {
 function parseOptions(argv: string[]): Options {
   const value = (flag: string): string | undefined =>
     argv.find((argument) => argument.startsWith(`${flag}=`))?.slice(flag.length + 1);
-  const fixturesRoot = value("--fixtures");
+  const fixturesRoot = value("--fixtures") ?? join(EXTENSION_ROOT, "tests", "integration", "fixtures");
   const workRoot = value("--work");
-  if (!fixturesRoot || !workRoot) {
-    throw new Error("Usage: runIntegration --fixtures=<dir> --work=<dir> [--only=a,b] [--real] [--packaged=<extensionsDir>]");
+  if (!workRoot) {
+    throw new Error("Usage: runIntegration --work=<dir> [--fixtures=<dir>] [--only=a,b] [--real] [--packaged=<extensionsDir>]");
   }
   return {
     only: (value("--only") ?? "").split(",").filter(Boolean),
@@ -143,6 +143,15 @@ function git(repository: string, args: string[]): void {
 function resetFixture(repository: string): void {
   git(repository, ["reset", "--hard", "HEAD"]);
   git(repository, ["clean", "-fd"]);
+}
+
+function prepareFixture(template: string, repository: string): void {
+  cpSync(template, repository, { recursive: true });
+  git(repository, ["init", "-q"]);
+  git(repository, ["config", "user.name", "Countersign Integration"]);
+  git(repository, ["config", "user.email", "countersign-integration@example.invalid"]);
+  git(repository, ["add", "--all"]);
+  git(repository, ["commit", "--quiet", "--message", "Integration fixture baseline"]);
 }
 
 function writeSettings(repository: string, settings: Record<string, unknown>): void {
@@ -183,10 +192,11 @@ async function runCase(
   options: Options,
   executable: string,
 ): Promise<CaseOutcome> {
-  const repository = join(options.fixturesRoot, testCase.fixture);
   const caseWork = join(options.workRoot, testCase.name);
   rmSync(caseWork, { recursive: true, force: true });
   mkdirSync(caseWork, { recursive: true });
+  const repository = join(caseWork, "repository");
+  prepareFixture(join(options.fixturesRoot, testCase.fixture), repository);
   const resultFile = join(caseWork, "result.json");
   const logPath = join(caseWork, "vscode.log");
   const userDataDir = join(caseWork, "user-data");

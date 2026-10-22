@@ -21,13 +21,13 @@ npm test
 
 Press <kbd>F5</kbd> in VS Code for an Extension Development Host. `npm run package` builds the VSIX.
 
-Integration cases need a display and a fixture repository:
+Integration cases use the committed templates in `tests/integration/fixtures/`; the runner copies them to the work directory and initializes temporary Git repositories with baseline commits. They need a display:
 
 ```sh
-npm run test:integration -- --fixtures=<dir> --work=<dir>
+npm run test:integration -- --work=/tmp/countersign-integration
 ```
 
-Each fixture directory is a Git repository with at least one commit, and `.vscode/` git-ignored so the harness can write settings without dirtying the tree. The `cancel-during-check` case additionally needs a `slow-check.js` that spawns a child and stays alive.
+On headless Linux, run the suite under Xvfb with `xvfb-run -a npm run test:integration -- --work=/tmp/countersign-integration`. The `cancel-during-check` template starts a check that spawns a child process; the case verifies cancellation stops both processes. The default suite uses mock providers and sends no provider requests; CI runs it under Xvfb.
 
 ## Code style
 

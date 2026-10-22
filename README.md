@@ -160,13 +160,19 @@ npm test             # vitest + test typecheck, no provider requests
 
 Unit tests use mocked provider runners and temporary Git repositories. The webview script is exercised through a DOM double, so the chat rendering is covered without a browser.
 
-Integration cases drive the real VS Code commands in an extension host, with the input box and confirmation modal answered by the harness. They need a display and a fixture repository:
+Integration cases drive the real VS Code commands in an extension host, with the input box and confirmation modal answered by the harness. The fixture templates are checked into `tests/integration/fixtures/`; the runner copies each one into the work directory and creates a temporary Git repository with a baseline commit. No provider request is sent by the default suite. On a machine with a display, run:
 
 ```sh
-npm run test:integration -- --fixtures=<dir> --work=<dir>
+npm run test:integration -- --work=/tmp/countersign-integration
 ```
 
-The default integration cases use test-only fake providers and send no provider request. `--real` adds the live Claude and Codex workflow case, which edits the fixture repository and consumes account quota. `--packaged=<extensions-dir>` runs the cases against the files of an installed VSIX instead of the sources.
+On a headless Linux machine, use Xvfb:
+
+```sh
+xvfb-run -a npm run test:integration -- --work=/tmp/countersign-integration
+```
+
+CI runs the default mock-only suite under Xvfb, including the process-tree cancellation case. `--real` adds the live Claude and Codex workflow case, which edits the temporary repository and consumes account quota. `--packaged=<extensions-dir>` runs the cases against the files of an installed VSIX instead of the sources.
 
 Live probe scripts under `scripts/` (`--live`) talk to the real CLIs on temporary repositories and consume quota. They are run by hand, never from CI.
 

@@ -48,3 +48,18 @@ jobs:
       # of a public repository are downloadable by anyone. See docs/third-party-accounts.md.
       - run: npm run package
       - run: rm -f ./*.vsix
+
+  integration:
+    name: VS Code integration (mock only)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+          cache: npm
+      - run: npm ci
+      # The committed fixtures use fake providers only; xvfb supplies the display for Electron.
+      # This includes cancel-during-check, which asserts that cancellation terminates the check
+      # process and its child before the extension host exits.
+      - run: xvfb-run -a npm run test:integration -- --work=${{ runner.temp }}/countersign-integration
