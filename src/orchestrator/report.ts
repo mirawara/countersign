@@ -1,5 +1,7 @@
 import { WorkflowResult } from "../shared/types";
 
+const SNAPSHOT_EXCLUDED_DIRS = "node_modules, dist, build, coverage, .cache, .venv and target";
+
 export function summarizeWorkflow(result: WorkflowResult): string {
   return [
     "--- Workflow summary ---",
@@ -14,7 +16,7 @@ export function summarizeWorkflow(result: WorkflowResult): string {
     `Configured check results: ${result.checks.length === 0 ? "none" : result.checks.map((check) => `${check.id}=${check.passed ? "passed" : "failed"}${check.timedOut ? " (timed out)" : ""}`).join(", ")}`,
     `Findings: ${result.findings.length}`,
     `Working tree before execution: ${result.startingWorkingTreeEntries?.length ?? 0} change(s).`,
-    `Working tree after checks: ${result.workingTreeEntries.length === 0 ? "no reviewable changes" : `${result.workingTreeEntries.length} change(s)`}. ${result.changeSource === "git" ? "Git-ignored files are not covered." : "Generated directories are excluded."}`,
+    `Working tree after checks: ${result.workingTreeEntries.length === 0 ? "no reviewable changes" : `${result.workingTreeEntries.length} change(s)`}. ${result.changeSource === "git" ? "Git-ignored untracked paths are omitted." : `Snapshot exclusions (${SNAPSHOT_EXCLUDED_DIRS}) stay out of review even when other files changed.`}`,
     `Diff: ${result.diff || result.simulatedDiff ? "available with Countersign: Show Workflow Diff" : "none"}`,
     `Review evidence: ${result.findings.length > 0 ? "available with Countersign: Show Review Details" : "none"}`,
     `Check output: ${result.checks.length > 0 ? "available with Countersign: Show Check Results" : "none"}`,
@@ -68,6 +70,11 @@ export function detailedWorkflowReport(result: WorkflowResult): string {
     ...(result.workingTreeEntries.length > 100 ? [`…and ${result.workingTreeEntries.length - 100} more entries. Use Show Workflow Diff for the full diff.`] : []),
     result.diff || result.simulatedDiff ? "Open **Show diff** on this report to inspect the saved patch." : "No diff is available.",
     "",
+    "## Review scope and exclusions",
+    result.changeSource === "git"
+      ? "The Git diff includes tracked generated paths and omits Git-ignored untracked paths."
+      : `Snapshot mode excludes ${SNAPSHOT_EXCLUDED_DIRS}. Changes there are omitted from review and reporting even when other files are included in the diff.`,
+    "",
     "## Local checks",
     ...(result.checks.length ? result.checks.map((check) => {
       const configured = result.configuredChecks?.find((item) => item.id === check.id);
@@ -92,7 +99,7 @@ export function detailedWorkflowReport(result: WorkflowResult): string {
     ...(result.metrics.length ? result.metrics.map((item) => `- ${item.provider}: ${item.inputTokens ?? "?"} input tokens, ${item.outputTokens ?? "?"} output tokens; ${item.estimatedCostUsd ?? "unavailable"} USD API price estimate`)
       : ["Usage was not reported."]),
     "",
-    `${result.changeSource === "git" ? "The Git diff" : "The file snapshot"} covers reviewable changes in this workspace only. ${result.changeSource === "git" ? "Git-ignored files" : "Generated directories"}, external files, commands and network actions are not independently audited by this report. USD figures are provider estimates, not subscription charges.`,
+    `${result.changeSource === "git" ? "The Git diff" : "The file snapshot"} covers reviewable changes in this workspace only. External files, commands and network actions are not independently audited by this report. USD figures are provider estimates, not subscription charges.`,
   ];
   return lines.filter((line) => line !== undefined).join("\n").slice(0, 98_000);
 }

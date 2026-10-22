@@ -20,6 +20,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - Balanced and real chat accept folders without Git and Git folders with existing changes. Clean Git folders use the diff against HEAD; dirty Git folders and ordinary folders use a bounded file snapshot from the start of the turn. Earlier Git work is excluded from Codex review and correction. No files are automatically committed, stashed or removed.
 - Snapshot stability checks hash files one at a time, avoiding a second in-memory copy of the bounded workspace contents. The plan confirmation lists up to 20 existing Git status entries; `no_changes` explains that no Codex review ran and names generated directories skipped by snapshots.
+- Workflow reports name snapshot-excluded generated directories even when other files are reviewed. Provider availability is stubbed in the public-command unit test, so the suite does not depend on locally installed Claude or Codex CLIs.
 - Codex receives Claude's implementation summary alongside the actual diff, so it can verify the claimed work against file changes.
 - Real chat now makes separate planning and execution requests for each approved message, including questions that do not need file changes. Claude's direct file tools stay inside the repository in Ask mode; approved commands and Codex escalations may reach outside it.
 - Mock providers are no longer configurable in the extension. Automated tests use internal provider fakes.

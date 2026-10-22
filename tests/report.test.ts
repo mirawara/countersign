@@ -7,6 +7,7 @@ describe("workflow summary privacy", () => {
     const result: WorkflowResult = {
       taskId: "test-id", state: "completed_with_findings", repository: "/repo",
       task: "SECRET_TASK_PROMPT", startedAt: "now", finishedAt: "later",
+      changeSource: "snapshot",
       diff: "SECRET_DIFF_CONTENT", reviewSummary: "SECRET_REVIEW_SUMMARY",
       findings: [{ severity: "High", file: "src/a.ts", line: 1, evidence: "SECRET_EVIDENCE", summary: "Bug" }],
       checks: [{ id: "lint", passed: false, exitCode: 1, output: "SECRET_CHECK_OUTPUT", timedOut: false }],
@@ -26,6 +27,8 @@ describe("workflow summary privacy", () => {
     expect(inChat).toContain("SECRET_EVIDENCE");
     expect(inChat).toContain("SECRET_CHECK_OUTPUT");
     expect(inChat).toContain("Which API?");
+    expect(inChat).toContain("Snapshot mode excludes node_modules, dist, build, coverage, .cache, .venv and target");
+    expect(inChat).toContain("even when other files are included in the diff");
     expect(inChat).not.toContain("SECRET_DIFF_CONTENT");
   });
 });

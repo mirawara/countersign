@@ -69,6 +69,7 @@ describe("VS Code command entry", () => {
 
   it("does not accept chat approval callbacks through the public VS Code command", async () => {
     repository = await createCleanGitRepository();
+    vi.spyOn(ClaudeCliProvider.prototype, "checkAvailability").mockResolvedValue({ available: true });
     activate({ subscriptions: [], workspaceState: { get: () => undefined, update: () => Promise.resolve() } } as unknown as vscode.ExtensionContext);
     const start = callbacks.get("countersign.startWorkflow") as unknown as (request: unknown) => Promise<unknown>;
     const injectedApproval = vi.fn(async () => true);
