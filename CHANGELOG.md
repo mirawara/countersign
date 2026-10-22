@@ -18,11 +18,11 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Changed
 
-- Balanced and real chat accept folders without Git and Git folders with existing changes. Git review still covers the full diff against HEAD; ordinary folders use a bounded file snapshot from the start of the turn. No files are automatically committed, stashed or removed.
+- Balanced and real chat accept folders without Git and Git folders with existing changes. Clean Git folders use the diff against HEAD; dirty Git folders and ordinary folders use a bounded file snapshot from the start of the turn. Earlier Git work is excluded from Codex review and correction. No files are automatically committed, stashed or removed.
 - Codex receives Claude's implementation summary alongside the actual diff, so it can verify the claimed work against file changes.
 - Real chat now makes separate planning and execution requests for each approved message, including questions that do not need file changes. Claude's direct file tools stay inside the repository in Ask mode; approved commands and Codex escalations may reach outside it.
-- The mock provider is no longer offered in the sidebar. It remains an internal command used by the packaged integration test, and as a settings-only path for the Command Palette workflow's test cases.
-- `Balanced` from the sidebar always runs the real Claude and Codex pair.
+- Mock providers are no longer configurable in the extension. Automated tests use internal provider fakes.
+- The Command Palette workflow and sidebar Balanced mode both run the real Claude and Codex pair.
 
 ### Fixed
 

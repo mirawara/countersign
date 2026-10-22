@@ -235,9 +235,9 @@ function buildReviewPrompt(request: AgentRequest): string {
     request.task,
     request.clarifications?.length ? `User answers:\n${JSON.stringify(request.clarifications)}` : "",
     request.implementationSummary ? `Claude's report of what it did (unverified; check against the actual files and diff):\n${request.implementationSummary.slice(0, 5_000)}` : "",
-    request.preExistingPaths?.length ? `Paths with changes before this workflow (the Git diff includes them):\n${request.preExistingPaths.join("\n")}` : "",
+    request.preExistingPaths?.length ? `Git status entries present before this workflow (these paths are excluded from this review diff):\n${request.preExistingPaths.join("\n")}` : "",
     "",
-    simulated ? "Simulated diff (it exists only in memory and is not applied to the workspace):" : `Actual ${request.changeSource === "snapshot" ? "file snapshot" : "Git"} diff:`,
+    simulated ? "Simulated diff (it exists only in memory and is not applied to the workspace):" : `Actual ${request.changeSource === "git" ? "Git" : "workspace snapshot"} diff:`,
     request.diff ?? request.simulatedDiff ?? "(no diff supplied)",
   ].join("\n");
 }

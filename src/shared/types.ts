@@ -15,7 +15,6 @@ export type WorkflowState =
   | "completed_with_findings"
   | "no_changes"
   | "validation_failed"
-  | "blocked_dirty_repository"
   | "blocked_untrusted_workspace"
   | "blocked_provider"
   | "blocked_permissions"
@@ -57,7 +56,7 @@ export interface AgentRequest {
   preExistingPaths?: string[];
   signal: AbortSignal;
   readChanges?: () => Promise<import("../context/gitChanges").GitChanges>;
-  changeSource?: "git" | "snapshot";
+  changeSource?: "git" | "git-snapshot" | "snapshot";
 }
 
 export interface AgentResult {
@@ -117,7 +116,7 @@ export interface WorkflowResult {
   checks: CheckResult[];
   workingTreeEntries: string[];
   startingWorkingTreeEntries?: string[];
-  changeSource?: "git" | "snapshot";
+  changeSource?: "git" | "git-snapshot" | "snapshot";
   message: string;
   plan?: string;
   implementationSummary?: string;

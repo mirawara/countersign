@@ -230,6 +230,7 @@ async function runCase(
     const child = spawn(executable, launchArgs, {
       env: {
         ...cleanEnvironment(),
+        COUNTERSIGN_TEST_MODE: "1",
         AIDO_CASE: testCase.name,
         AIDO_RESULT_FILE: resultFile,
         ELECTRON_NO_ATTACH_CONSOLE: "1",

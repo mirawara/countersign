@@ -18,12 +18,11 @@ describe("Git preflight", () => {
     await expect(preflightGit(repository)).resolves.toEqual({ repository, dirtyEntries: [] });
   });
 
-  it("blocks tracked and untracked working tree changes", async () => {
+  it("reports tracked and untracked working tree changes without blocking", async () => {
     const repository = await createCleanGitRepository();
     repositories.push(repository);
     await writeFile(join(repository, "new-file.txt"), "untracked");
-    await expect(preflightGit(repository)).rejects.toMatchObject({ kind: "dirty_repository" });
-    await expect(preflightGit(repository, { allowDirty: true })).resolves.toEqual({
+    await expect(preflightGit(repository)).resolves.toEqual({
       repository, dirtyEntries: ["?? new-file.txt"],
     });
     expect(await readGitStatus(repository)).toHaveLength(1);

@@ -2,7 +2,7 @@ import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import { ProcessFailure, runExecutable } from "../shared/process";
 
-export type GitPreflightErrorKind = "not_a_repository" | "workspace_mismatch" | "dirty_repository" | "git_unavailable";
+export type GitPreflightErrorKind = "not_a_repository" | "workspace_mismatch" | "git_unavailable";
 
 export class GitPreflightError extends Error {
   constructor(readonly kind: GitPreflightErrorKind, message: string) {
@@ -16,7 +16,7 @@ export interface GitPreflightResult {
   dirtyEntries: string[];
 }
 
-export async function preflightGit(workspacePath: string, options: { allowDirty?: boolean } = {}): Promise<GitPreflightResult> {
+export async function preflightGit(workspacePath: string): Promise<GitPreflightResult> {
   let workspaceRealPath: string;
   try {
     workspaceRealPath = await realpath(workspacePath);
@@ -54,12 +54,6 @@ export async function preflightGit(workspacePath: string, options: { allowDirty?
 
   try {
     const dirtyEntries = await readGitStatus(topLevel);
-    if (dirtyEntries.length > 0 && !options.allowDirty) {
-      throw new GitPreflightError(
-        "dirty_repository",
-        `The repository has ${dirtyEntries.length} tracked or untracked change(s). Commit or move them before starting.`,
-      );
-    }
     return { repository: topLevel, dirtyEntries };
   } catch (error) {
     if (error instanceof GitPreflightError) throw error;

@@ -40,12 +40,12 @@ export function validateConfiguration(raw: RawConfiguration): OrchestratorConfig
   if (executionPermission !== "askBeforeChange" && executionPermission !== "fullAccess") {
     throw new Error("countersign.executionPermission must be 'askBeforeChange' or 'fullAccess'.");
   }
-  const provider = raw.provider ?? "mock";
+  const provider = raw.provider ?? "claude";
   if (provider !== "mock" && provider !== "claude") {
     throw new Error("countersign.provider must be 'mock' or 'claude'.");
   }
 
-  const codexProvider = raw.codexProvider ?? "mock";
+  const codexProvider = raw.codexProvider ?? "real";
   if (codexProvider !== "mock" && codexProvider !== "real") {
     throw new Error("countersign.codexProvider must be 'mock' or 'real'.");
   }

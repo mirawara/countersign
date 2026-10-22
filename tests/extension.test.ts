@@ -38,6 +38,8 @@ vi.mock("vscode", () => ({
 
 import { activate, deactivate, ExtensionRuntime } from "../src/extension";
 
+process.env.COUNTERSIGN_TEST_MODE = "1";
+
 afterEach(async () => {
   resolveInput?.(undefined);
   resolveInput = undefined;

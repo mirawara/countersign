@@ -21,14 +21,14 @@
 
 ---
 
-Countersign puts a persistent chat in the VS Code sidebar and lets you hand a workspace task to Claude or Codex. Its point is the **`Balanced` workflow**: Claude implements the change, your configured checks run against the real files, and Codex reviews the diff in a read-only sandbox. Git folders use the diff against HEAD; other folders use a file snapshot taken before the task.
+Countersign puts a persistent chat in the VS Code sidebar and lets you hand a workspace task to Claude or Codex. Its point is the **`Balanced` workflow**: Claude implements the change, your configured checks run against the real files, and Codex reviews the diff in a read-only sandbox. A clean Git folder uses the diff against HEAD; a dirty Git folder or a folder without Git uses a file snapshot taken before the task.
 
 It is built around a few deliberate constraints:
 
 - **Your accounts, your login.** The extension launches the `claude` and `codex` CLIs you authenticated yourself. It does not access their login stores for authentication. Workspace files and diffs may contain secret text, so inspect the folder before sending it to a provider. See [Your Claude and Codex accounts](#your-claude-and-codex-accounts).
 - **Approve the plan every time.** Real turns show a read-only plan first. After you approve it, **Ask before change** requests permission for edits, commands and network tools; **Full access** runs them without further prompts. An approved command in Ask mode can also affect files outside the repository. Choose the level before sending the task.
 - **Verifiable isolation.** Real Claude turns stay blocked until an isolation gate passes for the exact installed CLI and SDK versions.
-- **Mock-only CI.** The automated suite never sends a provider request. Live probes are separate, opt-in scripts against temporary repositories.
+- **No mock mode in the extension.** Both providers run for a real Balanced workflow. Automated unit tests use provider fakes; live probes are separate, opt-in scripts against temporary folders.
 
 > **Early preview.** This is a personal tool made public, verified on Linux. Several exit criteria are still open — see [Status](#status) and the [roadmap](ROADMAP.md).
 
@@ -95,13 +95,13 @@ Select **Claude + Codex (Balanced)** as the mode, or run **Countersign: Start Wo
 
 1. From the sidebar, Claude proposes a read-only plan. Necessary clarification questions appear in the chat; answer there, then approve the plan in the chat. The Command Palette entry shows the plan in its confirmation dialog.
 2. Choose **Ask before change** to review Claude's edits, commands, network tools and each configured local check, or **Full access** to allow those actions, including changes outside the repository, after plan approval. MCP remains disabled. If an agent needs a decision during implementation, review or correction, the workflow pauses for an answer in the chat.
-3. Git collects the real diff in a repository; in a folder without Git, Countersign compares reviewable files with a snapshot taken before planning. Your configured local checks run against the files.
+3. A clean Git folder supplies its diff against HEAD. In a dirty Git folder or one without Git, Countersign compares reviewable files with a snapshot taken before planning. Existing Git changes are listed in the report and excluded from Codex's review and Claude's correction. Your configured local checks run against the files.
 4. Codex receives Claude's completion summary as context, checks it against the actual diff and workspace files in a read-only sandbox, and returns structured findings with evidence.
 5. Findings at or above your threshold get one Claude re-evaluation and correction pass, followed by another check run. There is no second Codex review after the correction.
 
 The sidebar leaves a detailed report in the thread, including the plan, answers, changed files, checks, findings, correction and provider usage. **Show diff** on the report opens the saved patch. Questions can pause between CLI turns; an in-progress tool call cannot be interrupted for a question. If files changed before a question, the workflow checks that their Git snapshot is unchanged before it resumes.
 
-The diff collector refuses excluded paths (common secret names, dependencies, build output), binary new files, more than 40 changed files, new text files over 16 KiB and diffs over 256 KiB. A folder without Git also has a 20,000 file / 64 MiB snapshot limit; generated directories are skipped, and changed files over 1 MiB cannot be reviewed. Filename exclusions do not prove that no secret is present. Local checks are configured as an executable plus arguments, never inferred from repository scripts; they may change files, and real runs include those changes in the reviewed diff. The workflow never resets, stages, commits or cleans anything.
+The diff collector refuses excluded paths (common secret names, dependencies, build output), binary new files, more than 40 changed files, new text files over 16 KiB and diffs over 256 KiB. Dirty Git folders and folders without Git also have a 20,000 file / 64 MiB snapshot limit; `node_modules`, `dist`, `build`, `coverage`, `.cache`, `.venv`, and `target` are skipped, so changes there are not reviewed or reported. Changed files over 1 MiB cannot be reviewed. Filename exclusions do not prove that no secret is present. Local checks are configured as an executable plus arguments, never inferred from repository scripts; they may change files, and real runs include their reviewable changes. The workflow never resets, stages, commits or cleans anything.
 
 ## Safety model
 
@@ -130,8 +130,6 @@ Settings live under `countersign.*`. The ones you are most likely to touch:
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| `provider` | `mock` | Implementation provider for the Command Palette workflow (`mock` or `claude`). The sidebar always uses real agents. |
-| `codexProvider` | `mock` | Review provider for the Command Palette workflow (`mock` or `real`). |
 | `claudeExecutable` / `codexExecutable` | `claude` / `codex` | Paths to the CLIs. |
 | `executionPermission` | `askBeforeChange` | Default for Command Palette workflows; the sidebar selector overrides it per turn. `fullAccess` grants commands, network and external file access after plan approval. |
 | `claudeAllowedTools` | `Read, Glob, Grep, Edit, Write` | Legacy bounded tool list; the two execution permission modes use their own tool policy. |
@@ -140,7 +138,7 @@ Settings live under `countersign.*`. The ones you are most likely to touch:
 | `taskTimeoutMinutes`, `providerTimeoutMinutes`, `checkTimeoutMinutes` | `30`, `15`, `5` | Guard rails for the extension's loop. |
 | `budgetGuardUsd` | `1` | Stops a run past an estimated spend. An estimate, not a billing cap. |
 
-`mock` settings exist for the test suite; the sidebar does not offer a mock provider.
+Mock providers are internal test fixtures and cannot be selected in the extension.
 
 ## Documentation
 
@@ -168,7 +166,7 @@ Integration cases drive the real VS Code commands in an extension host, with the
 npm run test:integration -- --fixtures=<dir> --work=<dir>
 ```
 
-By default only mock cases run and no provider request is sent. `--real` adds the live Claude and Codex workflow case, which edits the fixture repository and consumes account quota. `--packaged=<extensions-dir>` runs the cases against the files of an installed VSIX instead of the sources.
+The default integration cases use test-only fake providers and send no provider request. `--real` adds the live Claude and Codex workflow case, which edits the fixture repository and consumes account quota. `--packaged=<extensions-dir>` runs the cases against the files of an installed VSIX instead of the sources.
 
 Live probe scripts under `scripts/` (`--live`) talk to the real CLIs on temporary repositories and consume quota. They are run by hand, never from CI.
 

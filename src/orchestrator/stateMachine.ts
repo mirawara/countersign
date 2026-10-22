@@ -5,7 +5,6 @@ const TERMINAL = new Set<WorkflowState>([
   "completed_with_findings",
   "no_changes",
   "validation_failed",
-  "blocked_dirty_repository",
   "blocked_untrusted_workspace",
   "blocked_provider",
   "blocked_permissions",
@@ -18,8 +17,8 @@ const TERMINAL = new Set<WorkflowState>([
 
 const ALLOWED: Record<WorkflowState, ReadonlySet<WorkflowState>> = {
   idle: new Set(["preflight"]),
-  preflight: new Set(["awaiting_confirmation", "blocked_dirty_repository", "blocked_untrusted_workspace", "blocked_provider", "failed", "cancelled"]),
-  awaiting_confirmation: new Set(["implementing", "blocked_dirty_repository", "blocked_provider", "failed", "cancelled", "timed_out"]),
+  preflight: new Set(["awaiting_confirmation", "blocked_untrusted_workspace", "blocked_provider", "failed", "cancelled"]),
+  awaiting_confirmation: new Set(["implementing", "blocked_provider", "failed", "cancelled", "timed_out"]),
   awaiting_input: new Set(["implementing", "reviewing", "correcting", "failed", "cancelled", "timed_out"]),
   implementing: new Set(["awaiting_input", "running_checks", "no_changes", "failed", "cancelled", "timed_out", "blocked_provider", "blocked_permissions", "blocked_auth_or_quota"]),
   running_checks: new Set(["reviewing", "no_changes", "completed_clean", "completed_with_findings", "validation_failed", "failed", "cancelled", "timed_out"]),
@@ -32,7 +31,6 @@ const ALLOWED: Record<WorkflowState, ReadonlySet<WorkflowState>> = {
   completed_with_findings: new Set(),
   no_changes: new Set(),
   validation_failed: new Set(),
-  blocked_dirty_repository: new Set(),
   blocked_untrusted_workspace: new Set(),
   blocked_provider: new Set(),
   blocked_permissions: new Set(),

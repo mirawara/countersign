@@ -23,6 +23,7 @@ export interface WorkflowInput {
   selectedModels?: WorkflowResult["selectedModels"];
   initialMetrics?: WorkflowResult["metrics"];
   startingChanges?: GitChanges;
+  startingEntries?: string[];
   tracker?: WorkspaceChanges;
   askQuestion?: (phase: "implementing" | "reviewing" | "correcting", question: string,
     signal: AbortSignal) => Promise<string | undefined>;
@@ -53,7 +54,8 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
   let finalFindings: Finding[] = [];
   let providerRequestAttempted = false;
   let timedOut = false;
-  const realImplementation = input.config.provider === "claude";
+  const realImplementation = input.config.provider === "claude" && input.claude.id !== "implementation-mock";
+  const realReview = input.config.codexProvider === "real" && input.codex.id !== "review-mock";
   const workflowController = new AbortController();
   const onExternalAbort = (): void => workflowController.abort();
   if (input.signal.aborted) onExternalAbort();
@@ -92,12 +94,12 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
     findings: finalFindings,
     checks,
     workingTreeEntries,
-    startingWorkingTreeEntries: startingChanges?.entries ?? [],
+    startingWorkingTreeEntries: input.startingEntries ?? tracker?.startingEntries ?? startingChanges?.entries ?? [],
     changeSource: tracker?.source,
     message,
     mock: !providerRequestAttempted,
-    implementationProvider: input.config.provider,
-    reviewProvider: input.config.codexProvider,
+    implementationProvider: realImplementation ? "claude" : "mock",
+    reviewProvider: realReview ? "real" : "mock",
     executionPermission: input.config.executionPermission,
     metrics,
   });
@@ -143,7 +145,7 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
       ensureActive();
       const after = await readChanges();
       if (JSON.stringify(after) !== JSON.stringify(before)) {
-        throw new Error("The repository changed while waiting for local check approval. Inspect the diff before continuing.");
+        throw new Error("The workspace changed while waiting for local check approval. Inspect the diff before continuing.");
       }
       if (!approved) return false;
     }
@@ -193,7 +195,7 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
         : implementation.question, implementationAnswers);
       const current = await readChanges();
       if (JSON.stringify({ diff: current.diff, entries: current.entries }) !== snapshot) {
-        throw new Error("The repository changed while waiting for an implementation answer. Inspect the diff before continuing.");
+        throw new Error("The workspace changed while waiting for an implementation answer. Inspect the diff before continuing.");
       }
     }
     ensureActive();
@@ -209,8 +211,8 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
       changedPaths = implementation.changedPaths ?? [];
     }
     if (realImplementation ? JSON.stringify(await readChanges()) === JSON.stringify(startingChanges) : !implementation.changed) {
-      emit("no_changes", "Implementation produced no repository changes.");
-      return makeResult("No repository changes were produced by the implementation.");
+      emit("no_changes", "Implementation produced no workspace changes.");
+      return makeResult("No workspace changes were produced by the implementation.");
     }
 
     if (!(await approveChecks())) {
@@ -242,27 +244,27 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
       return makeResult(`Validation failed after the ${realImplementation ? "implementation" : "simulated implementation"}.`);
     }
     if (!realImplementation && JSON.stringify(await readChanges()) !== JSON.stringify(startingChanges)) {
-      emit("validation_failed", "A local check modified the repository during a mock workflow.");
-      return makeResult("Local checks changed repository files; the mock diff cannot review those changes.");
+      emit("validation_failed", "A local check modified the workspace during a mock workflow.");
+      return makeResult("Local checks changed workspace files; the mock diff cannot review those changes.");
     }
     if (realImplementation && changedPaths.length === 0) {
       emit("no_changes", "No changes remain after local checks.");
-      return makeResult("No repository changes remain after local checks.");
+      return makeResult("No workspace changes remain after local checks.");
     }
 
-    emit("reviewing", input.config.codexProvider === "real"
-      ? `Codex CLI is reviewing the ${realImplementation ? "actual repository diff" : "in-memory simulated change"} in its read-only sandbox.`
+    emit("reviewing", realReview
+      ? `Codex CLI is reviewing the ${realImplementation ? "actual workflow diff" : "in-memory simulated change"} in its read-only sandbox.`
       : "Mock Codex is reviewing the in-memory simulated change.");
     let review: AgentResult;
     const reviewAnswers: { question: string; answer: string }[] = [];
     try {
-      providerRequestAttempted ||= input.config.codexProvider === "real";
+      providerRequestAttempted ||= realReview;
       while (true) {
         review = await awaitAbortable(input.codex.execute({
           taskId, mode: "review", repository: input.repository, task: executionTask,
           diff, simulatedDiff, clarifications: reviewAnswers, signal: workflowController.signal,
           changeSource: tracker.source,
-          implementationSummary, preExistingPaths: startingChanges?.paths,
+          implementationSummary, preExistingPaths: input.startingEntries ?? startingChanges?.paths,
         }), workflowController.signal, abortFailure);
         ensureActive();
         if (!review.question) break;
@@ -271,7 +273,7 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
         if (beforeAnswer) {
           const afterAnswer = await readChanges();
           if (JSON.stringify(afterAnswer) !== JSON.stringify(beforeAnswer)) {
-            throw new Error("The repository changed while waiting for a review answer. Inspect the diff before continuing.");
+            throw new Error("The workspace changed while waiting for a review answer. Inspect the diff before continuing.");
           }
         }
       }
@@ -303,14 +305,14 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
     reviewSummary = review.message.slice(0, 4_000);
     if (review.metrics) metrics.push({ provider: input.codex.id, ...review.metrics });
 
-    if (input.config.codexProvider === "real" && !realImplementation) {
+    if (realReview && !realImplementation) {
       finalFindings = review.findings;
       if (finalFindings.length > 0) {
         emit("completed_with_findings", `Codex review reported ${finalFindings.length} finding(s).`);
         return makeResult("Codex read-only review completed with findings. No correction was attempted.");
       }
       emit("completed_clean", "Codex read-only review completed without findings.");
-      return makeResult("Codex read-only review completed without findings. No repository changes were made.");
+      return makeResult("Codex read-only review completed without findings. No workspace changes were made.");
     }
 
     const candidates = eligibleFindings(
@@ -352,7 +354,7 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
         : correction.question, correctionAnswers);
       const current = await readChanges();
       if (JSON.stringify({ diff: current.diff, entries: current.entries }) !== snapshot) {
-        throw new Error("The repository changed while waiting for a correction answer. Inspect the diff before continuing.");
+        throw new Error("The workspace changed while waiting for a correction answer. Inspect the diff before continuing.");
       }
     }
     ensureActive();
@@ -393,8 +395,8 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
       return makeResult(`Validation failed after the ${realImplementation ? "correction" : "simulated correction"}.`);
     }
     if (!realImplementation && JSON.stringify(await readChanges()) !== JSON.stringify(startingChanges)) {
-      emit("validation_failed", "A local check modified the repository during a mock workflow.");
-      return makeResult("Local checks changed repository files; the mock diff cannot review those changes.");
+      emit("validation_failed", "A local check modified the workspace during a mock workflow.");
+      return makeResult("Local checks changed workspace files; the mock diff cannot review those changes.");
     }
 
     if (finalFindings.length > 0) {

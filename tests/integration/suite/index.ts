@@ -149,7 +149,7 @@ async function mockClean(): Promise<CaseReport> {
 
     assert(recorder.modals.length === 1, `Expected exactly one confirmation modal, got ${recorder.modals.length}.`);
     const modal = recorder.modals[0];
-    assertIncludes(modal.detail, `Repository: ${repository}`, "Confirmation detail");
+    assertIncludes(modal.detail, `Workspace: ${repository}`, "Confirmation detail");
     assertIncludes(modal.detail, "Document the add helper in sample.js", "Confirmation detail");
     assertIncludes(modal.detail, "Mock scenario: clean", "Confirmation detail");
     assertIncludes(modal.detail, "marker:", "Confirmation detail must list the configured checks");

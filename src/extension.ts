@@ -208,25 +208,25 @@ export class ExtensionRuntime {
       const details = [
         `Workspace: ${repository}`,
         tracker.source === "snapshot"
-          ? "No Git repository: a file snapshot was captured. The final diff covers changes since this workflow started, within the stated review limits."
-          : startingChanges.entries.length
-          ? `Existing working-tree changes: ${startingChanges.paths.join(", ")}. The final Codex review includes the full diff against HEAD, including these earlier changes; the report lists them separately.`
-          : "Existing working-tree changes: none.",
+          ? "No Git repository root is open for this folder: a file snapshot was captured. Changes cannot be reverted from Countersign here. Generated directories are excluded from review and reporting."
+          : tracker.source === "git-snapshot"
+          ? `Git had ${tracker.startingEntries.length} existing change(s) when this workflow began. A file snapshot records that baseline; Codex reviews only changes made after it. Earlier Git entries will be listed in the report. Generated directories are excluded from review and reporting.`
+          : "Git working tree was clean at the start of the workflow.",
         `Task: ${task.trim()}`,
         `Claude model: ${config.provider === "claude" ? config.claudeModel || "CLI default" : "Mock"}; effort: ${config.provider === "claude" ? config.claudeEffort || "CLI default" : "Mock"}.`,
         `Codex model: ${config.codexProvider === "real" ? config.codexModel || "CLI default" : "Mock"}; reasoning effort: ${config.codexProvider === "real" ? config.codexEffort || "CLI default" : "Mock"}.`,
         config.provider === "mock" ? "Claude tools: mock uses none." : config.executionPermission === "fullAccess"
-          ? `After plan approval: Full access. Claude may run commands, use the network and change files outside the workspace without further prompts. MCP remains disabled. The ${tracker.source === "snapshot" ? "file snapshot" : "Git diff"} covers only this workspace.`
-          : "After plan approval: Ask before change. Claude may read repository files; edits, commands and network tools ask for approval in chat or a VS Code dialog. MCP remains disabled.",
+          ? `After plan approval: Full access. Claude may run commands, use the network and change files outside the workspace without further prompts. MCP remains disabled. The ${tracker.source === "git" ? "Git diff" : "workspace snapshot diff"} covers only reviewable workspace changes.`
+          : "After plan approval: Ask before change. Claude may read workspace files; edits, commands and network tools ask for approval in chat or a VS Code dialog. MCP remains disabled.",
         config.provider === "mock" ? `Mock scenario: ${config.mockScenario}` : "No mock scenario is used in the real workflow.",
         `Configured local checks (${config.executionPermission === "askBeforeChange" ? "each asks for permission before running" : "these will run after approval"}):\n${checksSummary}`,
-        `Configured check processes may modify files. Real workflows include their reviewable changes in the ${tracker.source === "snapshot" ? "file snapshot diff" : "Git diff"}; mock workflows fail validation if they change the workspace.`,
+        `Configured check processes may modify files. Their reviewable changes are included in the ${tracker.source === "git" ? "Git diff" : "workspace snapshot diff"}.`,
         `Finding threshold for the correction path: ${config.findingThreshold}`,
         config.provider === "mock"
           ? "Implementation: mock only. Changes are simulated in memory; the mock does not edit files."
           : `Implementation: real Claude CLI (${config.claudeExecutable}) may consume account quota. The estimated budget guard is ${config.budgetGuardUsd} USD per invocation; it is not a billing cap.`,
         config.codexProvider === "real"
-          ? `Review: real Codex CLI (${config.codexExecutable}) in a read-only sandbox. It receives the task and ${config.provider === "mock" ? "simulated" : "actual"} diff, can inspect repository files as context, and may consume account quota. The invocation ignores Codex config.toml and user/project execpolicy rules; CODEX_HOME authentication remains available.`
+          ? `Review: real Codex CLI (${config.codexExecutable}) in a read-only sandbox. It receives the task and ${config.provider === "mock" ? "simulated" : "actual"} workflow diff, can inspect workspace files as context, and may consume account quota. The invocation ignores Codex config.toml and user/project execpolicy rules; CODEX_HOME authentication remains available.`
           : "Review: mock Codex; no AI provider request is made.",
       ].join("\n\n");
       const confirmationLabel = config.provider === "claude" ? "Start Real Workflow" : config.codexProvider === "real" ? "Start Mock + Codex Review" : "Start Mock Workflow";
@@ -255,7 +255,7 @@ export class ExtensionRuntime {
       const currentFolders = vscode.workspace.workspaceFolders;
       if (!currentFolders || currentFolders.length !== 1 || currentFolders[0].uri.fsPath !== folders[0].uri.fsPath) {
         this.currentState = "failed";
-        this.lastStartIssue = "The workspace changed while confirmation was open. Start again from the intended repository.";
+        this.lastStartIssue = "The workspace changed while confirmation was open. Start again from the intended folder.";
         void vscode.window.showErrorMessage(this.lastStartIssue);
         return;
       }
@@ -298,7 +298,7 @@ export class ExtensionRuntime {
 
       if (!request?.interaction) this.output.show(true);
       this.output.appendLine("--- Countersign workflow ---");
-      this.output.appendLine(`Repository: ${repository}`);
+      this.output.appendLine(`Workspace: ${repository}`);
       this.output.appendLine(`Mode: ${config.provider} implementation + ${config.codexProvider} review.`);
       this.output.appendLine(`Claude model/effort: ${config.claudeModel || "CLI default"}/${config.claudeEffort || "CLI default"}; Codex model/effort: ${config.codexModel || "CLI default"}/${config.codexEffort || "CLI default"}.`);
 
@@ -327,6 +327,7 @@ export class ExtensionRuntime {
             codexModel: config.codexModel, codexEffort: config.codexEffort },
           initialMetrics: planningMetrics,
           startingChanges,
+          startingEntries: tracker.startingEntries,
           tracker,
           config,
           claude,
@@ -381,8 +382,8 @@ export class ExtensionRuntime {
       `VS Code: ${vscode.version}`,
       `Extension host Node.js: ${process.versions.node}`,
       `Workspace trusted: ${vscode.workspace.isTrusted ? "yes" : "no"}`,
-      `Provider setting: ${String(config.get("provider", "mock"))}`,
-      `Codex review provider: ${String(config.get("codexProvider", "mock"))}`,
+      `Implementation provider: ${process.env.COUNTERSIGN_TEST_MODE === "1" ? String(config.get("provider", "claude")) : "claude"}`,
+      `Review provider: ${process.env.COUNTERSIGN_TEST_MODE === "1" ? String(config.get("codexProvider", "real")) : "real"}`,
       `Current state: ${this.currentState}`,
       `Latest workflow: ${this.latestResult?.state ?? "none"}`,
       `Claude settings-source gate: ${(await loadClaudeGateRecord())?.version ?? "not verified"}`,
@@ -497,12 +498,13 @@ async function validateSelectedModels(config: OrchestratorConfig, repository: st
 
 function readConfiguration(): Record<string, unknown> {
   const config = vscode.workspace.getConfiguration("countersign");
+  const internalTestMode = process.env.COUNTERSIGN_TEST_MODE === "1";
   return {
-    provider: config.get<unknown>("provider", "mock"),
+    provider: internalTestMode ? config.get<unknown>("provider", "claude") : "claude",
     claudeExecutable: config.get<unknown>("claudeExecutable", "claude"),
-    codexProvider: config.get<unknown>("codexProvider", "mock"),
+    codexProvider: internalTestMode ? config.get<unknown>("codexProvider", "real") : "real",
     codexExecutable: config.get<unknown>("codexExecutable", "codex"),
-    mockScenario: config.get<unknown>("mockScenario", "clean"),
+    mockScenario: internalTestMode ? config.get<unknown>("mockScenario", "clean") : "clean",
     executionPermission: config.get<unknown>("executionPermission", "askBeforeChange"),
     claudeAllowedTools: config.get<unknown>("claudeAllowedTools", ["Read", "Glob", "Grep", "Edit", "Write"]),
     localChecks: config.get<unknown>("localChecks", []),
@@ -523,7 +525,6 @@ async function assertStartingChanges(tracker: WorkspaceChanges, starting: GitCha
 }
 
 function mapPreflightState(kind: GitPreflightError["kind"]): WorkflowState {
-  if (kind === "dirty_repository") return "blocked_dirty_repository";
   if (kind === "git_unavailable") return "blocked_provider";
   if (kind === "workspace_mismatch") return "failed";
   return "failed";

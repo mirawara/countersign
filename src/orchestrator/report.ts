@@ -5,7 +5,7 @@ export function summarizeWorkflow(result: WorkflowResult): string {
     "--- Workflow summary ---",
     `Task ID: ${result.taskId}`,
     `State: ${result.state}`,
-    `Workspace: ${result.repository} (${result.changeSource === "snapshot" ? "file snapshot" : "Git"})`,
+    `Workspace: ${result.repository} (${result.changeSource === "git" ? "Git" : "file snapshot"})`,
     `Started: ${result.startedAt}`,
     `Finished: ${result.finishedAt}`,
     `Mode: ${result.implementationProvider} implementation + ${result.reviewProvider} review${result.mock ? " (no AI request)" : ""}`,
@@ -14,7 +14,7 @@ export function summarizeWorkflow(result: WorkflowResult): string {
     `Configured check results: ${result.checks.length === 0 ? "none" : result.checks.map((check) => `${check.id}=${check.passed ? "passed" : "failed"}${check.timedOut ? " (timed out)" : ""}`).join(", ")}`,
     `Findings: ${result.findings.length}`,
     `Working tree before execution: ${result.startingWorkingTreeEntries?.length ?? 0} change(s).`,
-    `Working tree after checks: ${result.workingTreeEntries.length === 0 ? "no reviewable changes" : `${result.workingTreeEntries.length} change(s)`}. ${result.changeSource === "snapshot" ? "Generated directories are excluded." : "Git-ignored files are not covered."}`,
+    `Working tree after checks: ${result.workingTreeEntries.length === 0 ? "no reviewable changes" : `${result.workingTreeEntries.length} change(s)`}. ${result.changeSource === "git" ? "Git-ignored files are not covered." : "Generated directories are excluded."}`,
     `Diff: ${result.diff || result.simulatedDiff ? "available with Countersign: Show Workflow Diff" : "none"}`,
     `Review evidence: ${result.findings.length > 0 ? "available with Countersign: Show Review Details" : "none"}`,
     `Check output: ${result.checks.length > 0 ? "available with Countersign: Show Check Results" : "none"}`,
@@ -31,7 +31,7 @@ export function detailedWorkflowReport(result: WorkflowResult): string {
     `Task: ${result.task}`,
     `Started: ${result.startedAt}`,
     `Finished: ${result.finishedAt}`,
-    `Workspace: ${result.repository} (${result.changeSource === "snapshot" ? "file snapshot" : "Git"})`,
+    `Workspace: ${result.repository} (${result.changeSource === "git" ? "Git" : "file snapshot"})`,
     `Agents: ${result.implementationProvider} implementation, ${result.reviewProvider} review`,
     `After plan approval: ${result.executionPermission === "fullAccess" ? "Full access" : "Ask before change"}`,
     result.selectedModels ? `Requested models: Claude ${result.selectedModels.claudeModel || "CLI default"} (effort ${result.selectedModels.claudeEffort || "CLI default"}); Codex ${result.selectedModels.codexModel || "CLI default"} (reasoning ${result.selectedModels.codexEffort || "CLI default"}). The workflow CLIs do not report an effective model back to this report.` : "",
@@ -55,12 +55,14 @@ export function detailedWorkflowReport(result: WorkflowResult): string {
     "## Changes already present before this workflow",
     ...(result.startingWorkingTreeEntries?.length
       ? result.startingWorkingTreeEntries.map((entry) => `- ${entry}`)
-      : ["None recorded."]),
+      : [result.changeSource === "snapshot" ? "No version-control status is available for the initial files." : "None recorded."]),
     "",
     "## Final working tree",
-    result.changeSource === "snapshot"
-      ? "The final diff compares reviewable workspace files with the snapshot taken before this workflow. Generated directories are excluded."
-      : "The final diff against HEAD includes any earlier changes above; entries here are not all attributable to this workflow.",
+    result.changeSource === "git"
+      ? "The final diff is against HEAD. The initial Git status above was clean."
+      : result.changeSource === "git-snapshot"
+      ? "The final diff compares reviewable workspace files with the snapshot taken before this workflow. Earlier Git entries are listed above and are excluded from this diff."
+      : "The final diff compares reviewable workspace files with the snapshot taken before this workflow. No Git repository root is open for this folder, so earlier work cannot be listed as changed or reverted by Countersign.",
     ...(result.workingTreeEntries.length ? result.workingTreeEntries.slice(0, 100).map((entry) => `- ${entry}`)
       : ["No working tree changes recorded."]),
     ...(result.workingTreeEntries.length > 100 ? [`…and ${result.workingTreeEntries.length - 100} more entries. Use Show Workflow Diff for the full diff.`] : []),
@@ -90,7 +92,7 @@ export function detailedWorkflowReport(result: WorkflowResult): string {
     ...(result.metrics.length ? result.metrics.map((item) => `- ${item.provider}: ${item.inputTokens ?? "?"} input tokens, ${item.outputTokens ?? "?"} output tokens; ${item.estimatedCostUsd ?? "unavailable"} USD API price estimate`)
       : ["Usage was not reported."]),
     "",
-    `${result.changeSource === "snapshot" ? "The file snapshot" : "The Git diff"} covers this workspace only. ${result.changeSource === "snapshot" ? "Generated directories" : "Git-ignored files"}, external files, commands and network actions are not independently audited by this report. USD figures are provider estimates, not subscription charges.`,
+    `${result.changeSource === "git" ? "The Git diff" : "The file snapshot"} covers reviewable changes in this workspace only. ${result.changeSource === "git" ? "Git-ignored files" : "Generated directories"}, external files, commands and network actions are not independently audited by this report. USD figures are provider estimates, not subscription charges.`,
   ];
   return lines.filter((line) => line !== undefined).join("\n").slice(0, 98_000);
 }

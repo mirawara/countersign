@@ -5,7 +5,8 @@ import { GitPreflightError, preflightGit } from "./gitPreflight";
 
 export interface WorkspaceChanges {
   readonly root: string;
-  readonly source: "git" | "snapshot";
+  readonly source: "git" | "git-snapshot" | "snapshot";
+  readonly startingEntries: string[];
   read(): Promise<GitChanges>;
 }
 
@@ -27,15 +28,33 @@ export async function createWorkspaceChanges(folder: string): Promise<WorkspaceC
     throw new Error("The workspace folder is unavailable on disk.");
   }
   try {
-    const git = await preflightGit(root, { allowDirty: true });
-    return { root: git.repository, source: "git", read: () => readGitChanges(git.repository) };
+    const git = await preflightGit(root);
+    if (git.dirtyEntries.length === 0) {
+      return { root: git.repository, source: "git", startingEntries: [], read: () => readGitChanges(git.repository) };
+    }
+    const baseline = await scan(root);
+    await assertSnapshotStable(root, baseline);
+    const verifiedGit = await preflightGit(root);
+    if (JSON.stringify(verifiedGit.dirtyEntries) !== JSON.stringify(git.dirtyEntries)) {
+      throw new Error("Git status changed while the initial workspace snapshot was captured. Start again.");
+    }
+    return { root: git.repository, source: "git-snapshot", startingEntries: git.dirtyEntries,
+      read: async () => compare(baseline, await scan(root)) };
   } catch (error) {
-    if (!(error instanceof GitPreflightError) || error.kind === "dirty_repository") throw error;
+    if (!(error instanceof GitPreflightError)) throw error;
     // A nested Git directory is treated as the exact workspace folder. Its own
     // snapshot excludes .git, so no parent repository is silently included.
   }
   const baseline = await scan(root);
-  return { root, source: "snapshot", read: async () => compare(baseline, await scan(root)) };
+  await assertSnapshotStable(root, baseline);
+  return { root, source: "snapshot", startingEntries: [], read: async () => compare(baseline, await scan(root)) };
+}
+
+async function assertSnapshotStable(root: string, baseline: Map<string, FileState>): Promise<void> {
+  const changes = compare(baseline, await scan(root));
+  if (changes.paths.length > 0) {
+    throw new Error("The workspace changed while the initial file snapshot was captured. Start again.");
+  }
 }
 
 async function scan(root: string): Promise<Map<string, FileState>> {
@@ -77,10 +96,16 @@ function compare(before: Map<string, FileState>, after: Map<string, FileState>):
   if (paths.length > MAX_FILES) throw new GitChangeError(`More than ${MAX_FILES} files changed. Narrow the task before review.`);
   const parts: string[] = [];
   for (const path of paths) {
-    validateReviewPath(path);
+    try { validateReviewPath(path); }
+    catch { throw new GitChangeError(`Changed path ${JSON.stringify(path)} is excluded from review; its contents were not read.`); }
     const old = before.get(path), current = after.get(path);
-    if ((old && (old.kind !== "file" || !old.content)) || (current && (current.kind !== "file" || !current.content))) {
-      throw new GitChangeError(`Changed file ${path} is a symlink, special file or too large to review.`);
+    for (const state of [old, current]) {
+      if (!state) continue;
+      if (state.kind !== "file") throw new GitChangeError(`Changed path ${path} is a symlink or special file; its contents were not read.`);
+      if (!state.content && state.size > MAX_SNAPSHOT_FILE_BYTES) {
+        throw new GitChangeError(`Changed file ${path} exceeds the ${MAX_SNAPSHOT_FILE_BYTES}-byte snapshot limit; its contents were not read.`);
+      }
+      if (!state.content) throw new GitChangeError(`Changed path ${path} was excluded from the snapshot; its contents were not read.`);
     }
     if (!old && current && current.size > MAX_NEW_FILE_BYTES) {
       throw new GitChangeError(`New file ${path} exceeds ${MAX_NEW_FILE_BYTES} bytes.`);

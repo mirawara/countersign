@@ -253,7 +253,7 @@ describe("mock BALANCED workflow", () => {
   it("marks all declared final outcomes as terminal", () => {
     const terminalStates: WorkflowState[] = [
       "completed_clean", "completed_with_findings", "no_changes", "validation_failed",
-      "blocked_dirty_repository", "blocked_untrusted_workspace", "blocked_provider",
+      "blocked_untrusted_workspace", "blocked_provider",
       "blocked_permissions", "blocked_auth_or_quota", "review_failed", "cancelled", "timed_out", "failed",
     ];
     for (const state of terminalStates) expect(isTerminalState(state), state).toBe(true);
@@ -269,7 +269,7 @@ async function runScenario(
 ): Promise<Awaited<ReturnType<typeof runMockWorkflow>>> {
   const repository = await createCleanGitRepository();
   repositories.push(repository);
-  const config = validateConfiguration({ mockScenario: scenario, codexProvider });
+  const config = validateConfiguration({ provider: "mock", mockScenario: scenario, codexProvider });
   const controller = new AbortController();
   return runMockWorkflow({
     repository,

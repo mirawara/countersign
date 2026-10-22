@@ -129,24 +129,6 @@
           "default": "askBeforeChange",
           "description": "After mandatory plan approval: ask before Claude changes, commands or network tools, or grant full system access for the task. Sidebar selection overrides this setting."
         },
-        "countersign.provider": {
-          "type": "string",
-          "enum": [
-            "mock",
-            "claude"
-          ],
-          "default": "mock",
-          "description": "Implementation provider. Real Claude requires a successful settings-source isolation test for its exact CLI version."
-        },
-        "countersign.codexProvider": {
-          "type": "string",
-          "enum": [
-            "mock",
-            "real"
-          ],
-          "default": "mock",
-          "description": "Review provider. The real Codex CLI uses exec with the read-only sandbox and may consume account quota."
-        },
         "countersign.claudeExecutable": {
           "type": "string",
           "default": "claude",
@@ -156,17 +138,6 @@
           "type": "string",
           "default": "codex",
           "description": "Codex CLI executable name or path."
-        },
-        "countersign.mockScenario": {
-          "type": "string",
-          "enum": [
-            "clean",
-            "finding",
-            "noChanges",
-            "error"
-          ],
-          "default": "clean",
-          "description": "Mock-only scenario used by the workflow."
         },
         "countersign.claudeAllowedTools": {
           "type": "array",

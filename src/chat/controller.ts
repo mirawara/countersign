@@ -50,9 +50,10 @@ export class ChatController implements vscode.Disposable {
   }) {
     this.store = new ChatStore(context.workspaceState);
     this.view = new ChatView(context.extensionUri, (message) => { void this.onMessage(message); }, () => this.postState());
-    // Internal only: the packaged integration test drives it through countersign.chatMockTurn.
-    this.capabilities.set("mock", { provider: "mock", available: true, accountLabel: "Mock · no account",
-      models: [{ value: "mock", label: "Mock", effortLevels: [] }] });
+    if (process.env.COUNTERSIGN_TEST_MODE === "1") {
+      this.capabilities.set("mock", { provider: "mock", available: true, accountLabel: "Test provider",
+        models: [{ value: "mock", label: "Test provider", effortLevels: [] }] });
+    }
     this.capabilities.set("claude", { provider: "claude", available: false, accountLabel: "Current Claude login", models: [],
       reason: "Real chat setup is not complete." });
     this.capabilities.set("codex", { provider: "codex", available: false, accountLabel: "Current ChatGPT login", models: [],
@@ -74,10 +75,12 @@ export class ChatController implements vscode.Disposable {
           totalMessageCount: state.threads.reduce((sum, thread) => sum + thread.messages.length, 0),
           lastStatus: this.store.activeThread().messages.at(-1)?.status ?? null };
       }),
-      vscode.commands.registerCommand("countersign.chatMockTurn", (text: string) => this.send({
-        type: "send", text, provider: "mock", model: "mock", effort: "", mode: "chat",
-      })),
     );
+    if (process.env.COUNTERSIGN_TEST_MODE === "1") {
+      this.subscriptions.push(vscode.commands.registerCommand("countersign.chatMockTurn", (text: string) => this.send({
+        type: "send", text, provider: "mock", model: "mock", effort: "", mode: "chat",
+      })));
+    }
     this.context.subscriptions.push(...this.subscriptions);
   }
 
@@ -588,7 +591,7 @@ export class ChatController implements vscode.Disposable {
       throw new Error("Workspace changed during planning. Inspect the files before starting another turn.");
     }
     const approved = await this.confirmChatPlan(threadId, provider, planned,
-      `After approval: ${executionPermission === "fullAccess" ? "Full access to commands, network and files outside the workspace without further prompts." : "Ask before edits, commands and network tools."}\nThe saved diff covers ${tracker.source === "git" ? "Git working-tree changes" : "file changes since this turn started"} in this workspace only.`, signal);
+      `After approval: ${executionPermission === "fullAccess" ? "Full access to commands, network and files outside the workspace without further prompts." : "Ask before edits, commands and network tools."}\nThe saved diff covers ${tracker.source === "git" ? "Git changes against HEAD" : "file changes since this turn started"} in this workspace only.${tracker.source === "snapshot" ? " This folder has no version control, so changes cannot be reverted from Countersign." : ""}${tracker.source !== "git" ? " Generated directories are excluded from review and reporting." : ""}`, signal);
     if (!approved) throw new Error("Plan was not approved. No execution was started.");
     if (JSON.stringify(await tracker.read()) !== JSON.stringify(startingChanges)) {
       throw new Error("Workspace changed during plan approval. Inspect the files before starting another turn.");
@@ -742,7 +745,7 @@ export class ChatController implements vscode.Disposable {
 
   private postState(): void {
     const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    const offered = [...this.capabilities.values()].filter((entry) => entry.provider !== "mock");
+    const offered = [...this.capabilities.values()].filter((entry) => entry.provider !== "mock" || process.env.COUNTERSIGN_TEST_MODE === "1");
     this.view.post({ type: "state", state: this.store.snapshot(), capabilities: offered,
       busy: Boolean(this.activeController), repositoryBusy: root ? isRepositoryLocked(root) : false,
       approval: this.approval ?? null, workflowPrompt: this.workflowPrompt ?? null, notice: this.notice });

@@ -208,9 +208,12 @@ function buildPrompt(request: AgentRequest, askBeforeChange: boolean): string {
   const instructions = [
     askBeforeChange
       ? "Follow the approved plan. Ask for approval before changes, commands and network tools. Do not use MCP or plugins."
-      : "Follow the approved plan. Full access was explicitly selected after plan review; commands, network and files outside the repository are allowed when the task needs them. Do not use MCP or plugins.",
-    `Report any commands, network actions or changes outside the workspace. The ${request.changeSource === "snapshot" ? "file snapshot" : "Git diff"} only covers this workspace.`,
-    `Return structured JSON matching the schema. The orchestrator computes the actual ${request.changeSource === "snapshot" ? "file snapshot diff" : "Git diff"} after you finish.`,
+      : "Follow the approved plan. Full access was explicitly selected after plan review; commands, network and files outside the workspace are allowed when the task needs them. Do not use MCP or plugins.",
+    request.changeSource === "git-snapshot"
+      ? "This Git workspace already contained user changes before the task. The supplied diff starts from a file snapshot taken before planning. Preserve all earlier work, including earlier edits in the same files; make only changes required by the approved task or confirmed review findings."
+      : "",
+    `Report any commands, network actions or changes outside the workspace. The ${request.changeSource === "git" ? "Git diff" : "workspace snapshot diff"} only covers reviewable changes inside this workspace.`,
+    `Return structured JSON matching the schema. The orchestrator computes the actual ${request.changeSource === "git" ? "Git diff" : "workspace snapshot diff"} after you finish.`,
   ];
   if (request.mode === "implement") {
     return [...instructions,

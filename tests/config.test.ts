@@ -4,7 +4,8 @@ import { validateConfiguration } from "../src/configuration/config";
 describe("configuration", () => {
   it("uses the documented severity and process termination defaults", () => {
     const config = validateConfiguration({});
-    expect(config.codexProvider).toBe("mock");
+    expect(config.provider).toBe("claude");
+    expect(config.codexProvider).toBe("real");
     expect(config.codexExecutable).toBe("codex");
     expect(config.findingThreshold).toBe("High");
     expect(config.terminationGracePeriodMs).toBe(1000);
