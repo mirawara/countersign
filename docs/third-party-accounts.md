@@ -5,15 +5,18 @@ Countersign drives two AI coding agents that **you** install and authenticate yo
 ## What the extension does
 
 - It launches the locally installed `claude` (Claude Code) and `codex` (Codex CLI) executables as child processes, through the Claude Agent SDK and the Codex app-server protocol.
-- It uses whatever login is already active for those CLIs on your machine. Authentication happens in the provider's own tool, with the provider's own login flow.
+- In **Turn settings**, you can choose the current CLI login or a named local CLI profile for each provider. Claude profiles use `CLAUDE_CONFIG_DIR`; Codex profiles use `CODEX_HOME` and file-based CLI credentials. The choice is fixed for the task and applies to catalogue reads, planning, implementation and review.
+- **Add** imports an existing CLI profile directory or creates an empty one. **Sign in** opens the provider's own login command in a VS Code terminal for the selected directory. Authentication stays in the provider's own tool.
 - It reports back what the provider tells it: account label, plan or quota status when exposed, model actually used, token counts, and the provider's own cost estimate.
 
 ## What the extension never does
 
-- **No login of its own.** Countersign ships no OAuth client, no sign-in button and no account service. It cannot sign you in to Claude or ChatGPT, and it does not try.
-- **No login credential handling.** Countersign does not open provider login stores or use API keys for authentication. There is no credential store, no secret sync and no telemetry. Workspace files and diffs can contain secret text, so inspect them before sending a request.
+- **No login of its own.** Countersign ships no OAuth client or account service. Its Sign in button opens `claude auth login` or `codex login` in a terminal; the CLI runs its own login flow.
+- **No login credential handling.** Countersign stores only profile labels and directory paths. It does not open provider login stores or use API keys for authentication. New profile directories are created under `~/.config/countersign/cli-profiles/`; the provider CLI writes its own credentials there. There is no secret sync or telemetry. Workspace files and diffs can contain secret text, so inspect them before sending a request.
 - **No silent switch to metered billing.** It never sets `ANTHROPIC_API_KEY`, never uses `--bare` (whose help states that Anthropic authentication then comes only from an API key or `apiKeyHelper`, with OAuth and keychain ignored), and never substitutes pay-per-use API credentials for a subscription seat.
-- **No quota circumvention.** There is no account rotation, no automatic failover between accounts and no retry designed to get around a usage limit. When a limit is reached, the turn stops and says so.
+- **No automatic account rotation.** Switching accounts is an explicit Turn settings choice before a task. There is no automatic failover or retry after a usage limit; the turn stops and says so.
+
+The CLIs do not provide a registry of every authenticated directory on your machine. Add an existing profile by choosing its directory. If none exists, Add can create one and open the official login. Removing a profile from Countersign removes only its label and path from the selector; it leaves the CLI directory and login untouched. After a terminal login, press **Refresh** to read the account identity and model catalogue. [Claude documents `CLAUDE_CONFIG_DIR`](https://code.claude.com/docs/en/env-vars); [Codex documents `CODEX_HOME` and file credentials](https://learn.chatgpt.com/docs/auth).
 
 ## Costs and limits are yours
 
@@ -34,6 +37,8 @@ Nothing in Countersign changes how either CLI authenticates, so using it is gove
 
 Anthropic's [Agent SDK overview](https://code.claude.com/docs/en/agent-sdk/overview) states that, without prior approval, third-party developers may not offer claude.ai login or claude.ai usage limits inside their own products. Countersign ships no login or account service: the user brings a CLI they have already authenticated. It does, however, use the Agent SDK and display provider-reported quota status. The published guidance does not settle whether distributing this particular combination to other users is permitted. The review in this repository establishes a personal-use case, not clearance to distribute the extension.
 
+The account selector adds a terminal shortcut to the provider's own login command. It does not add an OAuth implementation, but its presence does not resolve the distribution question above.
+
 OpenAI treats the equivalent case separately. [Sign in with ChatGPT](https://developers.openai.com/siwc/quickstart) distinguishes open-source applications from selected commercial partners, and its [app-server token-sharing guide](https://developers.openai.com/siwc/token-sharing-open-source/codex-app-server) expects the application to run its own OAuth flow and manage tokens. Countersign does neither, and reusing the CLI's stored token file as a shortcut to an in-product login is explicitly out of scope.
 
 Consequences for anyone redistributing this code:
@@ -48,7 +53,7 @@ The evidence and version-by-version results behind these statements are in [veri
 
 ## Redistributing the package itself
 
-Separate from account terms, and easy to miss: a VSIX built from this repository **bundles `@anthropic-ai/claude-agent-sdk`**, because the chat adapter imports it at runtime for interactive permission callbacks. That package ships its own licence:
+Separate from account terms, and easy to miss: a VSIX built from this repository **bundles `@anthropic-ai/claude-agent-sdk`**, because the Balanced Ask before change path imports it at runtime for interactive permission callbacks. That package ships its own licence:
 
 > © Anthropic PBC. All rights reserved. Use is subject to the Legal Agreements outlined here: https://code.claude.com/docs/en/legal-and-compliance
 

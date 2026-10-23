@@ -8,12 +8,12 @@ Status vocabulary: **done** means verified by a test or a reproducible probe; **
 
 | Area | Status | What is missing |
 | --- | --- | --- |
-| Sidebar chat: threads, search, rename, export, streaming, permissions, diff | partial | Binary attachments; persistence across a full VS Code restart is verified at store level only |
-| Claude provider through Agent SDK, Codex provider through app-server | partial | Model and effort catalogues are dynamic, but a full turn driven from the packaged UI is not yet covered by an automated test |
+| Sidebar chat: threads, search, rename, export, permissions, report and diff | partial | Binary attachments; persistence across a full VS Code restart is verified at store level only |
+| Claude and Codex model discovery | partial | Catalogues are dynamic, but a full turn driven from the packaged UI is not yet covered by an automated test |
 | Interactive permission prompts, cancellation, isolation gate | partial | Claude child-process termination has not been observed against a real child |
 | `Balanced` workflow: Claude implements, checks run, Codex reviews, one correction pass | done | — |
+| `Strict` consensus mode: plan hash agreement, human approval, snapshot digest agreement | partial | Built and covered by deterministic tests with fake providers; no live provider run and no manual click-through of its sidebar flow |
 | Sidebar planning, questions, approval and detailed report for `Balanced` | partial | Read-only planning probe and automated tests pass; the complete packaged UI flow still needs a real run |
-| Chat modes with custom instruction and timeout | partial | No general schema for configurable protocols |
 | One active task per repository | partial | The lock is in memory, so two VS Code windows on the same repository are not coordinated |
 | Linux | done | — |
 
@@ -41,11 +41,15 @@ A command-line entry point that runs the same orchestration without VS Code, so 
 
 ### 4. Daily use and measurement
 
-Use the chat as the primary tool on real tasks and record turns, token usage and outcomes on sample tasks. This gates the next item: without those numbers, a consensus protocol is a guess about cost.
+Use the chat as the primary tool on real tasks and record turns, token usage and outcomes on sample tasks.
+
+**Skipped as a gate, not completed.** This item was meant to gate the next one. A product decision started `Strict` without it, so the numbers it would have produced do not exist: every ceiling in `Strict` is an arbitrary placeholder, not a measured value. The item stays open, and the measurement is still the only way to replace those placeholders with cost figures.
 
 ### 5. `Strict` consensus mode
 
-Two phases, built only after item 4 produces data. Phase A: Claude and Codex review the same canonical plan in planning contexts with no write permission, approve or reject a specific plan hash, and any edit invalidates earlier approvals. Phase B: fresh sessions implement and review, Codex approves the diff of the final snapshot and Claude approves that same snapshot against the plan. A stall, an external modification or a budget ceiling pauses the task with its history instead of reporting success. Phase A runs under a turn and time ceiling, because the realistic failure is exhausting usage limits while planning.
+Two phases. Item 4 was skipped by decision, so this is being built without usage data. Phase A: Claude and Codex review the same canonical plan in planning contexts with no write permission, approve or reject a specific plan hash, and any edit invalidates earlier approvals. Phase B: fresh sessions implement and review, Codex approves the diff of the final snapshot and Claude approves that same snapshot against the plan. A stall, an external modification or a budget ceiling pauses the task with its history instead of reporting success. Phase A runs under a turn and time ceiling, because the realistic failure is exhausting usage limits while planning.
+
+Status: built, in four reviewed deliveries, and selectable per task in the sidebar. What exists: the canonical plan hash and its structured-response validation, the two-provider agreement on one hash, the human approval gate that fixes the changed-file ceiling and the permission, a filesystem perimeter scan that never trusts Git for the file set, the snapshot digest every approval is bound to, the review and final-consensus loop, the in-memory pause with its lifecycle marker and its clear command, and a full report. Strict includes credential-named files in its scan and provider context. What is not verified: **no live Claude or Codex run has confirmed that real responses satisfy the structured schemas**, the sidebar flow has not been clicked through by hand, and the CLI adapters are covered only by fake runners that assert the flags they pass. Every ceiling is an arbitrary placeholder, because item 4 was skipped.
 
 ### 6. Attachments and context control
 
@@ -62,6 +66,7 @@ Binary and image attachments where the selected model accepts them, plus explici
 
 ## Not planned
 
+- **Single-provider chat and custom instruction modes.** Countersign's sidebar runs the Claude + Codex workflow. The providers' own extensions handle standalone conversations.
 - **Automatic account failover.** An interrupted request may already have written to the repository with an unknown outcome, so resuming on another account risks applying the same change twice. The protocol that prevents that has to be written and verified before the feature can be considered, and the feature earns little in return.
 - **Multiple account profiles with switching.** Out of scope until the account questions in [docs/third-party-accounts.md](docs/third-party-accounts.md) are settled; it would also require proving that profile isolation holds for both CLIs, including the system keyring.
 - **Reading, copying or storing provider credentials.** Permanently excluded. Any feature that needs this is the wrong feature.
