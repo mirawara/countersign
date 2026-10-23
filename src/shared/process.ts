@@ -28,6 +28,8 @@ export interface ProcessResult {
 export interface ProcessOptions {
   cwd: string;
   timeoutMs: number;
+  /** Selects a CLI's own credential/config directory for this child only. */
+  env?: Partial<Record<"CLAUDE_CONFIG_DIR" | "CODEX_HOME", string>>;
   signal?: AbortSignal;
   maxOutputBytes?: number;
   gracePeriodMs?: number;
@@ -64,7 +66,7 @@ export function runExecutable(
       shell: false,
       windowsHide: true,
       detached: process.platform !== "win32",
-      env: buildChildEnvironment(),
+      env: buildChildEnvironment(options.env),
       stdio: ["pipe", "pipe", "pipe"],
     });
 
@@ -179,14 +181,16 @@ function processGroupAlive(child: ChildProcess): boolean {
   }
 }
 
-function buildChildEnvironment(): NodeJS.ProcessEnv {
+function buildChildEnvironment(overrides?: ProcessOptions["env"]): NodeJS.ProcessEnv {
   const names = process.platform === "win32"
     ? ["PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "USERPROFILE", "CODEX_HOME"]
-    : ["PATH", "HOME", "TMPDIR", "CODEX_HOME"];
+    : ["PATH", "HOME", "TMPDIR", "CODEX_HOME", "CLAUDE_CONFIG_DIR"];
   const env: NodeJS.ProcessEnv = {};
   for (const name of names) {
     const value = process.env[name];
     if (value !== undefined) env[name] = value;
   }
+  if (overrides?.CLAUDE_CONFIG_DIR) env.CLAUDE_CONFIG_DIR = overrides.CLAUDE_CONFIG_DIR;
+  if (overrides?.CODEX_HOME) env.CODEX_HOME = overrides.CODEX_HOME;
   return env;
 }

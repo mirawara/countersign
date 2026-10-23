@@ -26,12 +26,12 @@ export function chatGateMatches(record: unknown, cliVersion: string, sdk: string
     record.cliVersion === cliVersion && record.sdkVersion === sdk;
 }
 
-export async function verifyClaudeChatGate(executable: string): Promise<ClaudeChatGateRecord> {
+export async function verifyClaudeChatGate(executable: string, configDir?: string): Promise<ClaudeChatGateRecord> {
   if (process.platform !== "linux") throw new Error("The Claude chat gate is verified on Linux only.");
-  const env = subscriptionEnvironment();
+  const env = subscriptionEnvironment(configDir ? { CLAUDE_CONFIG_DIR: configDir } : undefined);
   const resolved = executable.includes("/") ? resolve(executable) : spawnSync("which", [executable], { encoding: "utf8", env }).stdout.trim();
   if (!resolved) throw new Error("Claude CLI is unavailable.");
-  const version = await inspectClaude(resolved, tmpdir());
+  const version = await inspectClaude(resolved, tmpdir(), configDir);
   const currentSdk = await sdkVersion();
   if (version.version !== VERIFIED_CLAUDE_CHAT_CLI || currentSdk !== VERIFIED_CLAUDE_CHAT_SDK) {
     throw new Error("Claude CLI or SDK version changed; the chat adapter needs a new compatibility check before live verification.");

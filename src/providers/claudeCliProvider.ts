@@ -48,6 +48,7 @@ export class ClaudeProviderError extends Error {
 
 export interface ClaudeCliProviderOptions {
   config: OrchestratorConfig;
+  accountDir?: string;
   gateRecord?: ClaudeGateRecord;
   runner?: ClaudeCliRunner;
   askPermission?: WorkflowPermissionPrompt;
@@ -72,6 +73,7 @@ export class ClaudeCliProvider implements AIProvider {
       const result = await this.run(this.options.config.claudeExecutable, ["--help"], {
         cwd: process.cwd(), timeoutMs: AVAILABILITY_TIMEOUT_MS, maxOutputBytes: 131_072,
         gracePeriodMs: this.options.config.terminationGracePeriodMs,
+        env: this.options.accountDir ? { CLAUDE_CONFIG_DIR: this.options.accountDir } : undefined,
       });
       if (result.exitCode !== 0) return { available: false, version, reason: "Claude CLI help could not be read." };
       const missing = requiredCapabilities(result.stdout);
@@ -107,9 +109,10 @@ export class ClaudeCliProvider implements AIProvider {
       if (!fullAccess) {
         if (!this.options.askPermission) throw new ClaudeProviderError("permissions", "Ask before change needs a permission prompt in the chat or VS Code window.");
         result = { exitCode: 0, stderr: "", stdout: await (this.options.sdkExecution ?? runClaudeSdkExecution)(config, request,
-          buildPrompt(request, true), RESPONSE_SCHEMA, this.options.askPermission) };
+          buildPrompt(request, true), RESPONSE_SCHEMA, this.options.askPermission, this.options.accountDir) };
       } else result = await this.run(config.claudeExecutable, args, {
         cwd: request.repository,
+        env: this.options.accountDir ? { CLAUDE_CONFIG_DIR: this.options.accountDir } : undefined,
         timeoutMs: config.providerTimeoutMinutes * 60_000,
         gracePeriodMs: config.terminationGracePeriodMs,
         maxOutputBytes: MAX_OUTPUT_BYTES,
@@ -154,13 +157,14 @@ export class ClaudeCliProvider implements AIProvider {
     try {
       result = await this.run(config.claudeExecutable, [
         "--print", "--output-format", "json", "--json-schema", JSON.stringify(PLAN_SCHEMA),
-          "--setting-sources", "", "--strict-mcp-config", "--disable-slash-commands",
+        "--setting-sources", "", "--strict-mcp-config", "--disable-slash-commands",
         "--permission-mode", "dontAsk", "--no-session-persistence",
         "--tools", readTools, "--allowedTools", readTools,
         ...(config.claudeModel ? ["--model", config.claudeModel] : []),
         ...(config.claudeEffort ? ["--effort", config.claudeEffort] : []),
       ], {
         cwd: repository, timeoutMs: config.providerTimeoutMinutes * 60_000,
+        env: this.options.accountDir ? { CLAUDE_CONFIG_DIR: this.options.accountDir } : undefined,
         gracePeriodMs: config.terminationGracePeriodMs, maxOutputBytes: MAX_OUTPUT_BYTES,
         signal,
         stdin: [
@@ -192,6 +196,7 @@ export class ClaudeCliProvider implements AIProvider {
     const result = await this.run(this.options.config.claudeExecutable, ["--version"], {
       cwd: process.cwd(), timeoutMs: AVAILABILITY_TIMEOUT_MS, maxOutputBytes: 32_768,
       gracePeriodMs: this.options.config.terminationGracePeriodMs,
+      env: this.options.accountDir ? { CLAUDE_CONFIG_DIR: this.options.accountDir } : undefined,
     });
     return result.exitCode === 0 ? result.stdout.trim().split(/\r?\n/, 1)[0] : undefined;
   }

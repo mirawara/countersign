@@ -10,7 +10,7 @@ import { AgentRequest } from "../shared/types";
 export type WorkflowPermissionPrompt = (tool: string, detail: string, signal: AbortSignal) => Promise<boolean>;
 
 export async function runClaudeSdkExecution(config: OrchestratorConfig, request: AgentRequest, prompt: string,
-  schema: Record<string, unknown>, askPermission: WorkflowPermissionPrompt): Promise<string> {
+  schema: Record<string, unknown>, askPermission: WorkflowPermissionPrompt, configDir?: string): Promise<string> {
   const gate = await loadClaudeChatGate();
   const sdk = await sdkVersion();
   if (sdk !== VERIFIED_CLAUDE_CHAT_SDK || !chatGateMatches(gate, VERIFIED_CLAUDE_CHAT_CLI, sdk)) {
@@ -25,7 +25,7 @@ export async function runClaudeSdkExecution(config: OrchestratorConfig, request:
   const active = query({ prompt, options: {
     cwd: request.repository,
     pathToClaudeCodeExecutable: config.claudeExecutable,
-    env: subscriptionEnvironment(),
+    env: subscriptionEnvironment(configDir ? { CLAUDE_CONFIG_DIR: configDir } : undefined),
     settingSources: [], strictMcpConfig: true, mcpServers: {},
     tools: ["Read", "Glob", "Grep", "Edit", "Write", "Bash", "WebFetch", "WebSearch"],
     allowedTools: [], permissionMode: "default", persistSession: false,

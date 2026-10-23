@@ -1,6 +1,7 @@
 import { ChildProcess, spawn } from "node:child_process";
 import { createInterface } from "node:readline";
-import { ChatModelOption } from "./types";
+import { ChatAccountUsage, ChatModelOption } from "./types";
+import { codexAccountUsage } from "./accountUsage";
 import { ExecutionPermission } from "../configuration/config";
 import { executableOutput, safeSummary, subscriptionEnvironment } from "./providerUtils";
 
@@ -20,9 +21,10 @@ export class CodexAppServer {
   private exitError: Error | undefined;
   private closed = false;
 
-  constructor(executable: string, cwd: string) {
-    this.child = spawn(executable, ["app-server", "--listen", "stdio://"], {
-      cwd, env: subscriptionEnvironment(), stdio: ["pipe", "pipe", "pipe"],
+  constructor(executable: string, cwd: string, codexHome?: string) {
+    this.child = spawn(executable, [...(codexHome ? ["--config", 'cli_auth_credentials_store="file"'] : []),
+      "app-server", "--listen", "stdio://"], {
+      cwd, env: subscriptionEnvironment(codexHome ? { CODEX_HOME: codexHome } : undefined), stdio: ["pipe", "pipe", "pipe"],
       shell: false, windowsHide: true, detached: process.platform !== "win32",
     });
     this.child.stderr?.resume();
@@ -47,8 +49,8 @@ export class CodexAppServer {
     });
   }
 
-  async initialize(): Promise<void> {
-    await this.request("initialize", { clientInfo: { name: "countersign", title: "Countersign", version: "0.1.0" } });
+  async initialize(timeoutMs = 20_000): Promise<void> {
+    await this.request("initialize", { clientInfo: { name: "countersign", title: "Countersign", version: "0.1.0" } }, timeoutMs);
     this.notify("initialized");
   }
 
@@ -98,13 +100,30 @@ export class CodexAppServer {
 export interface CodexAvailability {
   version: string;
   accountLabel: string;
+  accountEmail?: string;
+  usage?: ChatAccountUsage;
   models: ChatModelOption[];
 }
 
-export async function inspectCodex(executable: string, cwd: string): Promise<CodexAvailability> {
+/** Read only the email needed by the account picker; no model or usage request. */
+export async function inspectCodexAccount(executable: string, cwd: string, codexHome?: string): Promise<string | undefined> {
   subscriptionEnvironment();
-  const version = await executableOutput(executable, ["--version"], cwd);
-  const server = new CodexAppServer(executable, cwd);
+  const server = new CodexAppServer(executable, cwd, codexHome);
+  try {
+    await server.initialize(8_000);
+    const account = await server.request("account/read", { refreshToken: false }, 8_000);
+    const email = get(account.account, "email");
+    return get(account.account, "type") === "chatgpt" && typeof email === "string" && email.trim()
+      ? email.trim() : undefined;
+  } finally { server.close(); }
+}
+
+export async function inspectCodex(executable: string, cwd: string, codexHome?: string,
+  includeUsage = false): Promise<CodexAvailability> {
+  subscriptionEnvironment();
+  const version = await executableOutput(executable, ["--version"], cwd,
+    codexHome ? { CODEX_HOME: codexHome } : undefined);
+  const server = new CodexAppServer(executable, cwd, codexHome);
   try {
     await server.initialize();
     const account = await server.request("account/read", { refreshToken: false });
@@ -114,15 +133,43 @@ export async function inspectCodex(executable: string, cwd: string): Promise<Cod
     const models: ChatModelOption[] = rows.filter(record).filter((row) => typeof row.model === "string")
       .map((row) => ({ value: row.model as string, label: typeof row.displayName === "string" ? row.displayName : row.model as string,
         effortLevels: Array.isArray(row.supportedReasoningEfforts)
-          ? row.supportedReasoningEfforts.map((entry) => get(entry, "reasoningEffort")).filter((entry): entry is string => typeof entry === "string") : [] }));
+          ? row.supportedReasoningEfforts
+            .map((entry) => {
+              const value = get(entry, "reasoningEffort");
+              if (typeof value !== "string") return undefined;
+              const label = get(entry, "displayName") ?? get(entry, "label");
+              return { value, label: typeof label === "string" ? label : codexEffortLabel(value) };
+            })
+            .filter((entry): entry is { value: string; label: string } => entry !== undefined)
+          : [] }));
     const email = get(account.account, "email");
-    return { version, accountLabel: typeof email === "string" ? email : "ChatGPT subscription login", models };
+    const accountEmail = typeof email === "string" && email.trim() ? email.trim() : undefined;
+    let usage: ChatAccountUsage | undefined;
+    if (includeUsage) {
+      try { usage = codexAccountUsage(await server.request("account/rateLimits/read", {}, 8_000)); }
+      catch { /* A quota read is optional and cannot fail model discovery. */ }
+    }
+    return { version, accountLabel: accountEmail ?? "ChatGPT subscription login",
+      ...(accountEmail ? { accountEmail } : {}), ...(usage ? { usage } : {}), models };
   } finally { server.close(); }
+}
+
+function codexEffortLabel(value: string): string {
+  switch (value) {
+    case "low": return "Light";
+    case "medium": return "Medium";
+    case "high": return "High";
+    case "xhigh": return "Extra high";
+    case "max": return "Max";
+    case "ultra": return "Ultra";
+    default: return value;
+  }
 }
 
 export interface CodexTurn {
   executable: string;
   cwd: string;
+  codexHome?: string;
   prompt: string;
   sessionId?: string;
   model: string;
@@ -140,7 +187,7 @@ export async function runCodexTurn(options: CodexTurn): Promise<{ sessionId: str
   const approvalPolicy = options.phase === "planning" || fullAccess ? "never" : "on-request";
   const sandbox = fullAccess ? "danger-full-access" : "read-only";
   const sandboxPolicy = { type: fullAccess ? "dangerFullAccess" : "readOnly" };
-  const server = new CodexAppServer(options.executable, options.cwd);
+  const server = new CodexAppServer(options.executable, options.cwd, options.codexHome);
   let threadId = options.sessionId;
   let turnId: string | undefined;
   let cancelled = options.signal.aborted;

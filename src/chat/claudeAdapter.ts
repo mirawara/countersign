@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { query as queryType, type Query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { ChatModelOption, ChatQuota, ChatUsage } from "./types";
+import { ChatAccountUsage, ChatModelOption, ChatQuota, ChatUsage } from "./types";
+import { claudeAccountUsage } from "./accountUsage";
 import { ExecutionPermission } from "../configuration/config";
 import { executableOutput, safeSummary, subscriptionEnvironment } from "./providerUtils";
 import { claudeToolPolicy } from "./claudeToolPolicy";
@@ -16,14 +17,29 @@ async function sdk(): Promise<Sdk> {
 export interface ClaudeAvailability {
   version: string;
   accountLabel: string;
+  accountEmail?: string;
+  usage?: ChatAccountUsage;
   models: ChatModelOption[];
 }
 
-export async function inspectClaude(executable: string, cwd: string): Promise<ClaudeAvailability> {
+/** Lightweight identity lookup for a profile in the account picker. */
+export async function inspectClaudeAccount(executable: string, cwd: string, configDir?: string): Promise<string | undefined> {
+  subscriptionEnvironment();
+  const env = configDir ? { CLAUDE_CONFIG_DIR: configDir } : undefined;
+  const authText = await executableOutput(executable, ["auth", "status", "--json"], cwd, env);
+  let auth: unknown;
+  try { auth = JSON.parse(authText); } catch { return undefined; }
+  return isRecord(auth) && auth.loggedIn === true && typeof auth.email === "string" && auth.email.trim()
+    ? auth.email.trim() : undefined;
+}
+
+export async function inspectClaude(executable: string, cwd: string, configDir?: string,
+  includeUsage = false): Promise<ClaudeAvailability> {
+  const env = configDir ? { CLAUDE_CONFIG_DIR: configDir } : undefined;
   subscriptionEnvironment();
   const [version, authText] = await Promise.all([
-    executableOutput(executable, ["--version"], cwd),
-    executableOutput(executable, ["auth", "status", "--json"], cwd),
+    executableOutput(executable, ["--version"], cwd, env),
+    executableOutput(executable, ["auth", "status", "--json"], cwd, env),
   ]);
   let auth: unknown;
   try { auth = JSON.parse(authText); } catch { throw new Error("Claude authentication status is invalid."); }
@@ -33,23 +49,53 @@ export async function inspectClaude(executable: string, cwd: string): Promise<Cl
   const { query } = await sdk();
   async function* empty(): AsyncGenerator<never> { /* Catalog control request only. */ }
   const active = query({ prompt: empty(), options: {
-    cwd, pathToClaudeCodeExecutable: executable, env: subscriptionEnvironment(),
+    cwd, pathToClaudeCodeExecutable: executable, env: subscriptionEnvironment(env),
     settingSources: [], strictMcpConfig: true, mcpServers: {}, tools: [], allowedTools: [],
     permissionMode: "default", persistSession: false,
   } });
   try {
     const models = await active.supportedModels();
-    return { version, accountLabel: typeof auth.email === "string" ? auth.email : "Claude subscription login",
+    // This SDK control method is explicitly experimental. A quota read never determines
+    // whether the provider is usable, and a missing/changed reply is shown as unavailable.
+    let usage: ChatAccountUsage | undefined;
+    if (includeUsage && typeof active.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET === "function") {
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        const raw = await Promise.race([
+          active.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({ skipBehaviors: true }),
+          new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Claude usage timed out.")), 8_000); }),
+        ]);
+        usage = claudeAccountUsage(raw);
+      } catch { /* The optional usage read must not block the model catalogue. */ }
+      finally { if (timer) clearTimeout(timer); }
+    }
+    const accountEmail = typeof auth.email === "string" && auth.email.trim() ? auth.email.trim() : undefined;
+    return { version, accountLabel: accountEmail ?? "Claude subscription login",
+      ...(accountEmail ? { accountEmail } : {}), ...(usage ? { usage } : {}),
       models: models.map((model) => ({
       value: model.value, label: model.displayName,
-      effortLevels: model.supportsEffort ? model.supportedEffortLevels ?? [] : [],
+      // Whatever the installed CLI reports for this model, unfiltered.
+      effortLevels: (model.supportsEffort ? model.supportedEffortLevels ?? [] : [])
+        .map((level) => ({ value: level, label: claudeEffortLabel(level) })),
     })) };
   } finally { active.close(); }
+}
+
+function claudeEffortLabel(value: string): string {
+  switch (value) {
+    case "low": return "Low";
+    case "medium": return "Medium";
+    case "high": return "High";
+    case "xhigh": return "Extra high";
+    case "max": return "Max";
+    default: return value;
+  }
 }
 
 export interface ClaudeTurn {
   cwd: string;
   executable: string;
+  configDir?: string;
   prompt: string;
   sessionId?: string;
   model: string;
@@ -84,7 +130,8 @@ export async function runClaudeTurn(options: ClaudeTurn): Promise<ClaudeTurnResu
     : ["Read", "Glob", "Grep", "Edit", "Write", "Bash", "WebFetch", "WebSearch"];
   let active: Query;
   try { active = query({ prompt: options.prompt, options: {
-    cwd: options.cwd, pathToClaudeCodeExecutable: options.executable, env: subscriptionEnvironment(),
+    cwd: options.cwd, pathToClaudeCodeExecutable: options.executable,
+    env: subscriptionEnvironment(options.configDir ? { CLAUDE_CONFIG_DIR: options.configDir } : undefined),
     ...(options.sessionId ? { resume: sessionId } : { sessionId }),
     settingSources: [], strictMcpConfig: true, mcpServers: {},
     tools, allowedTools: [],

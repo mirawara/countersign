@@ -2,17 +2,19 @@ import { runExecutable } from "../shared/process";
 import { realpath } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
-export function subscriptionEnvironment(): NodeJS.ProcessEnv {
+export function subscriptionEnvironment(overrides?: Partial<Record<"CLAUDE_CONFIG_DIR" | "CODEX_HOME", string>>): NodeJS.ProcessEnv {
   const forbidden = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY"];
   if (forbidden.some((key) => Boolean(process.env[key]))) {
     throw new Error("API credentials are present in the environment. Remove them before using subscription chat.");
   }
-  return Object.fromEntries(Object.entries(process.env).filter(([key]) =>
-    !forbidden.includes(key) && (!key.startsWith("CODEX_") || key === "CODEX_HOME")));
+  return { ...Object.fromEntries(Object.entries(process.env).filter(([key]) =>
+    !forbidden.includes(key) && (!key.startsWith("CODEX_") || key === "CODEX_HOME"))),
+  ...overrides };
 }
 
-export async function executableOutput(executable: string, args: string[], cwd: string): Promise<string> {
-  const result = await runExecutable(executable, args, { cwd, timeoutMs: 10_000, maxOutputBytes: 32_768 });
+export async function executableOutput(executable: string, args: string[], cwd: string,
+  env?: Partial<Record<"CLAUDE_CONFIG_DIR" | "CODEX_HOME", string>>): Promise<string> {
+  const result = await runExecutable(executable, args, { cwd, timeoutMs: 10_000, maxOutputBytes: 32_768, env });
   if (result.exitCode !== 0) throw new Error(`${executable} ${args[0]} failed.`);
   return result.stdout.trim();
 }

@@ -61,16 +61,35 @@ export interface ChatMode {
   timeoutMinutes?: number;
 }
 
+/** An effort or reasoning level exactly as the provider's catalogue reports it. */
+export interface ChatEffortOption {
+  value: string;
+  /** The catalogue's own label, when it provides one. */
+  label?: string;
+}
+
 export interface ChatModelOption {
   value: string;
   label: string;
-  effortLevels: string[];
+  /** The levels this model supports, as its catalogue lists them. Never filtered locally. */
+  effortLevels: ChatEffortOption[];
+}
+
+/** Account quota snapshot reported by the provider, not a prediction of the next turn. */
+export interface ChatAccountUsage {
+  checkedAt: string;
+  windows: { label: string; usedPercent: number; resetsAt?: string }[];
+  /** Only Codex currently reports whether ordinary included usage is allowed. */
+  access?: "allowed" | "blocked";
 }
 
 export interface ChatCapability {
   provider: ChatProvider;
   available: boolean;
   accountLabel: string;
+  /** Email reported by the selected CLI login, when the provider exposes it. */
+  accountEmail?: string;
+  usage?: ChatAccountUsage;
   models: ChatModelOption[];
   reason?: string;
   version?: string;

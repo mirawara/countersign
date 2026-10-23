@@ -43,6 +43,7 @@ export type CodexCliRunner = (
 
 export interface CodexCliProviderOptions {
   executable: string;
+  accountDir?: string;
   model?: string;
   effort?: string;
   timeoutMs: number;
@@ -80,6 +81,7 @@ export class CodexCliProvider implements AIProvider {
     try {
       const versionResult = await this.run(this.options.executable, ["--version"], {
         cwd: process.cwd(),
+        env: this.options.accountDir ? { CODEX_HOME: this.options.accountDir } : undefined,
         timeoutMs: AVAILABILITY_TIMEOUT_MS,
         gracePeriodMs: this.options.gracePeriodMs,
         maxOutputBytes: 32_768,
@@ -93,6 +95,7 @@ export class CodexCliProvider implements AIProvider {
 
       const helpResult = await this.run(this.options.executable, ["exec", "--help"], {
         cwd: process.cwd(),
+        env: this.options.accountDir ? { CODEX_HOME: this.options.accountDir } : undefined,
         timeoutMs: AVAILABILITY_TIMEOUT_MS,
         gracePeriodMs: this.options.gracePeriodMs,
         maxOutputBytes: 65_536,
@@ -142,6 +145,7 @@ export class CodexCliProvider implements AIProvider {
           "--ignore-user-config",
           "--ignore-rules",
           "--ephemeral",
+          ...(this.options.accountDir ? ["--config", 'cli_auth_credentials_store="file"'] : []),
           ...(request.changeSource === "snapshot" ? ["--skip-git-repo-check"] : []),
           ...(this.options.model ? ["--model", this.options.model] : []),
           ...(this.options.effort ? ["--config", `model_reasoning_effort="${this.options.effort}"`] : []),
@@ -151,6 +155,7 @@ export class CodexCliProvider implements AIProvider {
           "-",
         ], {
           cwd: request.repository,
+          env: this.options.accountDir ? { CODEX_HOME: this.options.accountDir } : undefined,
           timeoutMs: this.options.timeoutMs,
           gracePeriodMs: this.options.gracePeriodMs,
           maxOutputBytes: MAX_PROVIDER_OUTPUT_BYTES,

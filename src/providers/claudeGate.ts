@@ -19,10 +19,11 @@ export async function verifyClaudeSettingsGate(
   config: OrchestratorConfig,
   signal: AbortSignal,
   runner: Runner = runExecutable,
+  accountDir?: string,
 ): Promise<ClaudeGateRecord> {
-  const version = await readVersion(config, runner);
+  const version = await readVersion(config, runner, accountDir);
   if (!version) throw new ClaudeGateError("Claude CLI version could not be read.");
-  const help = await runner(config.claudeExecutable, ["--help"], processOptions(process.cwd(), config, signal));
+  const help = await runner(config.claudeExecutable, ["--help"], processOptions(process.cwd(), config, signal, accountDir));
   if (help.exitCode !== 0 || requiredCapabilities(help.stdout).length > 0) {
     throw new ClaudeGateError("Claude CLI does not declare every required isolation and output flag.");
   }
@@ -45,19 +46,19 @@ export async function verifyClaudeSettingsGate(
       "--no-session-persistence", "--tools", "", "--allowedTools", "",
     ];
     const control = await runner(config.claudeExecutable, common, {
-      ...processOptions(directory, config, signal), stdin: "Reply with exactly OK.",
+      ...processOptions(directory, config, signal, accountDir), stdin: "Reply with exactly OK.",
     });
     if (!validResponse(control) || !(await exists(marker))) {
       throw new ClaudeGateError("Control run did not complete with the project hook firing; the gate remains closed.");
     }
     await unlink(marker);
     const isolated = await runner(config.claudeExecutable, [...common, "--setting-sources", ""], {
-      ...processOptions(directory, config, signal), stdin: "Reply with exactly OK.",
+      ...processOptions(directory, config, signal, accountDir), stdin: "Reply with exactly OK.",
     });
     if (!validResponse(isolated) || await exists(marker)) {
       throw new ClaudeGateError("The isolated run failed or a project hook still fired; the gate remains closed.");
     }
-    if (await readVersion(config, runner) !== version) {
+    if (await readVersion(config, runner, accountDir) !== version) {
       throw new ClaudeGateError("Claude CLI version changed during the gate test.");
     }
     return { version, passedAt: new Date().toISOString(), passed: true };
@@ -66,9 +67,10 @@ export async function verifyClaudeSettingsGate(
   }
 }
 
-function processOptions(cwd: string, config: OrchestratorConfig, signal: AbortSignal): ProcessOptions {
+function processOptions(cwd: string, config: OrchestratorConfig, signal: AbortSignal, accountDir?: string): ProcessOptions {
   return {
     cwd,
+    env: accountDir ? { CLAUDE_CONFIG_DIR: accountDir } : undefined,
     timeoutMs: Math.min(config.providerTimeoutMinutes * 60_000, 120_000),
     gracePeriodMs: config.terminationGracePeriodMs,
     maxOutputBytes: 1_048_576,
@@ -76,10 +78,11 @@ function processOptions(cwd: string, config: OrchestratorConfig, signal: AbortSi
   };
 }
 
-async function readVersion(config: OrchestratorConfig, runner: Runner): Promise<string | undefined> {
+async function readVersion(config: OrchestratorConfig, runner: Runner, accountDir?: string): Promise<string | undefined> {
   const result = await runner(config.claudeExecutable, ["--version"], {
     cwd: process.cwd(), timeoutMs: 10_000, maxOutputBytes: 32_768,
     gracePeriodMs: config.terminationGracePeriodMs,
+    env: accountDir ? { CLAUDE_CONFIG_DIR: accountDir } : undefined,
   });
   return result.exitCode === 0 ? result.stdout.trim().split(/\r?\n/, 1)[0] : undefined;
 }

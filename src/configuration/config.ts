@@ -62,10 +62,9 @@ export function validateConfiguration(raw: RawConfiguration): OrchestratorConfig
   }
 
   const claudeModel = modelSelection(raw.claudeModel, "claudeModel");
-  const claudeEffort = effortSelection(raw.claudeEffort, "claudeEffort", ["low", "medium", "high", "max"]);
+  const claudeEffort = effortSelection(raw.claudeEffort, "claudeEffort");
   const codexModel = modelSelection(raw.codexModel, "codexModel");
-  const codexEffort = effortSelection(raw.codexEffort, "codexEffort",
-    ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
+  const codexEffort = effortSelection(raw.codexEffort, "codexEffort");
   if (claudeEffort && !claudeModel) throw new Error("Choose a Claude model before selecting its effort.");
   if (codexEffort && !codexModel) throw new Error("Choose a Codex model before selecting its reasoning effort.");
 
@@ -131,10 +130,15 @@ function modelSelection(value: unknown, key: string): string {
   return value;
 }
 
-function effortSelection(value: unknown, key: string, levels: string[]): string {
+/**
+ * Shape only. Which levels exist is the provider catalogue's answer, not a list kept here:
+ * a level this build has never heard of must still reach the provider unchanged, and a
+ * saved level the catalogue no longer offers is reconciled at turn start, not rejected.
+ */
+function effortSelection(value: unknown, key: string): string {
   if (value === undefined) return "";
-  if (typeof value !== "string" || (value !== "" && !levels.includes(value))) {
-    throw new Error(`countersign.${key} has an unsupported effort level.`);
+  if (typeof value !== "string" || value.length > 100 || value.includes("\0") || /\s/.test(value)) {
+    throw new Error(`countersign.${key} must be a single effort level reported by the provider catalogue.`);
   }
   return value;
 }

@@ -37,7 +37,13 @@ describe("configuration", () => {
     expect([config.claudeModel, config.claudeEffort, config.codexModel, config.codexEffort])
       .toEqual(["sonnet", "high", "gpt-5.3-codex", "xhigh"]);
     expect(() => validateConfiguration({ claudeEffort: "high" })).toThrow(/Choose a Claude model/);
-    expect(() => validateConfiguration({ codexModel: "model", codexEffort: "unsupported" })).toThrow(/codexEffort/);
+    // The catalogue decides which levels exist, not a list kept in this repository: a
+    // level this build has never seen is carried through to the provider unchanged.
+    expect(validateConfiguration({ codexModel: "model", codexEffort: "ultra" }).codexEffort).toBe("ultra");
+    expect(validateConfiguration({ claudeModel: "sonnet", claudeEffort: "brand-new" }).claudeEffort).toBe("brand-new");
+    // Shape is still checked, so a malformed value cannot reach a command line.
+    expect(() => validateConfiguration({ codexModel: "model", codexEffort: "two words" })).toThrow(/codexEffort/);
+    expect(() => validateConfiguration({ codexModel: "model", codexEffort: "x".repeat(101) })).toThrow(/codexEffort/);
     expect(() => validateConfiguration({ claudeModel: "bad\nmodel" })).toThrow(/claudeModel/);
   });
 
