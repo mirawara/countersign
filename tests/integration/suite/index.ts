@@ -93,6 +93,7 @@ const CONTRIBUTED_COMMANDS = [
   "countersign.showDiff",
   "countersign.showReview",
   "countersign.showCheckResults",
+  "countersign.clearStrictInterruptionMarker",
 ];
 
 interface ChatSnapshot { viewResolved: boolean; threadCount: number; activeMessageCount: number; totalMessageCount: number; lastStatus: string | null }
@@ -330,6 +331,60 @@ async function realWorkflow(): Promise<CaseReport> {
   }
 }
 
+/**
+ * The Strict lifecycle marker command in the packaged extension: it reports an absent
+ * marker, asks before removing one, keeps it when the confirmation is dismissed, and
+ * states that removal touches only the metadata.
+ */
+async function strictMarkerCommand(): Promise<CaseReport> {
+  const dismissing = installRecorder({ task: undefined, confirm: false });
+  let keptMarker: boolean;
+  let absentReported: boolean;
+  let confirmationExplained: boolean;
+  try {
+    await assertExtensionActivates();
+    await vscode.commands.executeCommand("countersign.clearStrictInterruptionMarker");
+    absentReported = dismissing.information.some((message) => message.includes("No Strict interruption marker is stored."));
+    assert(absentReported, "The command did not report an absent marker.");
+
+    const marker = {
+      id: "integration-task", hostId: "another-window", mode: "strict",
+      timestamp: new Date().toISOString(), outcome: "active",
+    };
+    await seedStrictMarker(marker);
+    await vscode.commands.executeCommand("countersign.clearStrictInterruptionMarker");
+    const modal = dismissing.modals.at(-1);
+    assert(modal !== undefined && modal.message.includes("Clear the Strict interruption marker?"),
+      "The command did not ask for confirmation.");
+    confirmationExplained = Boolean(modal?.detail.includes("does not interrupt a task")
+      && modal?.detail.includes("cannot be determined"));
+    assert(confirmationExplained, "The confirmation did not explain the post-crash ambiguity.");
+    keptMarker = (await readStrictMarker())?.hostId === "another-window";
+    assert(keptMarker, "Dismissing the confirmation removed the marker.");
+  } finally {
+    dismissing.restore();
+  }
+
+  const confirming = installRecorder({ task: undefined, confirm: true });
+  try {
+    await vscode.commands.executeCommand("countersign.clearStrictInterruptionMarker");
+    assert(await readStrictMarker() === undefined, "Confirming did not remove the marker.");
+    assert(confirming.information.some((message) => message.includes("No task was interrupted or resumed.")),
+      "The command did not say that nothing was interrupted or resumed.");
+  } finally {
+    confirming.restore();
+  }
+  return { absentReported, confirmationExplained, markerKeptOnCancel: keptMarker, markerRemovedOnConfirm: true };
+}
+
+async function seedStrictMarker(marker: Record<string, unknown>): Promise<void> {
+  await vscode.commands.executeCommand("countersign.strictMarkerState", marker);
+}
+
+async function readStrictMarker(): Promise<{ hostId?: string } | undefined> {
+  return vscode.commands.executeCommand<{ hostId?: string } | undefined>("countersign.strictMarkerState");
+}
+
 const CASES: Record<string, () => Promise<CaseReport>> = {
   "chat-mock": chatMock,
   "mock-clean": mockClean,
@@ -337,6 +392,7 @@ const CASES: Record<string, () => Promise<CaseReport>> = {
   "mock-dismiss": mockDismiss,
   "mock-validation-failed": mockValidationFailed,
   "cancel-during-check": cancelDuringCheck,
+  "strict-marker": strictMarkerCommand,
   "real-workflow": realWorkflow,
 };
 

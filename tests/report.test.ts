@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { detailedWorkflowReport, summarizeWorkflow } from "../src/orchestrator/report";
-import { WorkflowResult } from "../src/shared/types";
+import { BalancedWorkflowResult } from "../src/shared/types";
 
 describe("workflow summary privacy", () => {
   it("keeps task text, diff, review evidence and check output out of the Output Channel summary", () => {
-    const result: WorkflowResult = {
-      taskId: "test-id", state: "completed_with_findings", repository: "/repo",
+    const result: BalancedWorkflowResult = {
+      mode: "balanced", taskId: "test-id", state: "completed_with_findings", repository: "/repo",
       task: "SECRET_TASK_PROMPT", startedAt: "now", finishedAt: "later",
       changeSource: "snapshot",
       diff: "SECRET_DIFF_CONTENT", reviewSummary: "SECRET_REVIEW_SUMMARY",

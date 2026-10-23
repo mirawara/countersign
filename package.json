@@ -104,6 +104,11 @@
         "title": "Countersign: Show Check Results"
       },
       {
+        "command": "countersign.clearStrictInterruptionMarker",
+        "title": "Countersign: Clear Strict interruption marker",
+        "enablement": "!countersign.strictTaskActive"
+      },
+      {
         "command": "countersign.openChat",
         "title": "Countersign: Open Chat"
       },

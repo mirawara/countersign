@@ -16,7 +16,7 @@ export interface GitPreflightResult {
   dirtyEntries: string[];
 }
 
-export async function preflightGit(workspacePath: string): Promise<GitPreflightResult> {
+export async function preflightGit(workspacePath: string, signal?: AbortSignal): Promise<GitPreflightResult> {
   let workspaceRealPath: string;
   try {
     workspaceRealPath = await realpath(workspacePath);
@@ -29,6 +29,7 @@ export async function preflightGit(workspacePath: string): Promise<GitPreflightR
     const top = await runExecutable("git", ["-c", "core.fsmonitor=false", "rev-parse", "--show-toplevel"], {
       cwd: workspaceRealPath,
       timeoutMs: 10_000,
+      signal,
     });
     if (top.exitCode !== 0) {
       throw new GitPreflightError("not_a_repository", "The workspace is not inside a Git repository.");
@@ -37,6 +38,7 @@ export async function preflightGit(workspacePath: string): Promise<GitPreflightR
   } catch (error) {
     if (error instanceof GitPreflightError) throw error;
     if (error instanceof ProcessFailure) {
+      if (error.kind === "cancelled") throw error;
       if (error.kind === "spawn_error") {
         throw new GitPreflightError("git_unavailable", "Git could not be started.");
       }
@@ -53,10 +55,11 @@ export async function preflightGit(workspacePath: string): Promise<GitPreflightR
   }
 
   try {
-    const dirtyEntries = await readGitStatus(topLevel);
+    const dirtyEntries = await readGitStatus(topLevel, signal);
     return { repository: topLevel, dirtyEntries };
   } catch (error) {
     if (error instanceof GitPreflightError) throw error;
+    if (error instanceof ProcessFailure && error.kind === "cancelled") throw error;
     if (error instanceof ProcessFailure && error.kind === "spawn_error") {
       throw new GitPreflightError("git_unavailable", "Git could not be started.");
     }
@@ -64,12 +67,12 @@ export async function preflightGit(workspacePath: string): Promise<GitPreflightR
   }
 }
 
-export async function readGitStatus(repository: string): Promise<string[]> {
+export async function readGitStatus(repository: string, signal?: AbortSignal): Promise<string[]> {
   try {
     const status = await runExecutable(
       "git",
       ["-c", "core.fsmonitor=false", "--no-optional-locks", "status", "--porcelain=v1", "--untracked-files=all"],
-      { cwd: repository, timeoutMs: 10_000 },
+      { cwd: repository, timeoutMs: 10_000, signal },
     );
     if (status.exitCode !== 0) {
       throw new GitPreflightError("not_a_repository", "Git status could not be read.");
@@ -77,6 +80,7 @@ export async function readGitStatus(repository: string): Promise<string[]> {
     return status.stdout.split(/\r?\n/).filter(Boolean);
   } catch (error) {
     if (error instanceof GitPreflightError) throw error;
+    if (error instanceof ProcessFailure && error.kind === "cancelled") throw error;
     if (error instanceof ProcessFailure && error.kind === "spawn_error") {
       throw new GitPreflightError("git_unavailable", "Git could not be started.");
     }

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { lstat, readFile, readdir, realpath } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 import { GitChangeError, GitChanges, readGitChanges, validateReviewPath } from "./gitChanges";
+import { SKIP_DIRS } from "./pathPolicy";
 import { GitPreflightError, preflightGit } from "./gitPreflight";
 
 export interface WorkspaceChanges {
@@ -16,10 +17,12 @@ const MAX_FILES = 40;
 const MAX_DIFF_BYTES = 262_144;
 const MAX_NEW_FILE_BYTES = 16_384;
 const MAX_SNAPSHOT_FILES = 20_000;
-const MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024;
+// Bound the bytes kept for patches, not the amount of workspace we may inspect.
+// Files outside this pool are still hashed and compared; if one changes, Balanced
+// reports that it cannot build a safe patch instead of claiming the tree is clean.
+const MAX_RETAINED_SNAPSHOT_BYTES = 64 * 1024 * 1024;
 const MAX_SNAPSHOT_FILE_BYTES = 1024 * 1024;
 const MAX_DIFF_EDIT_DISTANCE = 2_048;
-const SKIP_DIRS = new Set([".git", "node_modules", "dist", "build", "coverage", ".cache", ".venv", "target"]);
 
 interface DiffOperation { kind: "equal" | "delete" | "insert"; line: string }
 
@@ -63,7 +66,7 @@ async function assertSnapshotStable(root: string, baseline: Map<string, FileStat
 
 async function scan(root: string, retainContents = true): Promise<Map<string, FileState>> {
   const files = new Map<string, FileState>();
-  let totalBytes = 0;
+  let retainedBytes = 0;
   async function visit(directory: string): Promise<void> {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
       const absolute = resolve(directory, entry.name);
@@ -78,13 +81,14 @@ async function scan(root: string, retainContents = true): Promise<Map<string, Fi
       if (info.isFile() && info.size <= MAX_SNAPSHOT_FILE_BYTES) {
         // Excluded filenames are never read into the report or snapshot.
         try { validateReviewPath(path); } catch { files.set(path, state); continue; }
-        totalBytes += info.size;
-        if (totalBytes > MAX_SNAPSHOT_BYTES) throw new GitChangeError(`Workspace snapshot exceeds ${MAX_SNAPSHOT_BYTES} bytes. Open a smaller folder.`);
         const canonical = await realpath(absolute);
         if (!canonical.startsWith(`${root}${sep}`)) throw new GitChangeError(`File ${path} resolves outside the workspace.`);
         const content = await readFile(absolute);
         state.hash = createHash("sha256").update(content).digest("hex");
-        if (retainContents) state.content = content;
+        if (retainContents && retainedBytes + content.length <= MAX_RETAINED_SNAPSHOT_BYTES) {
+          state.content = content;
+          retainedBytes += content.length;
+        }
       }
       files.set(path, state);
     }
@@ -126,24 +130,30 @@ function compare(before: Map<string, FileState>, after: Map<string, FileState>):
       if (!state.content && state.size > MAX_SNAPSHOT_FILE_BYTES) {
         throw new GitChangeError(`Changed file ${path} exceeds the ${MAX_SNAPSHOT_FILE_BYTES}-byte snapshot limit; its contents were not read.`);
       }
-      if (!state.content) throw new GitChangeError(`Changed path ${path} was excluded from the snapshot; its contents were not read.`);
+      if (!state.content) throw new GitChangeError(`Changed path ${path} has no retained content for a patch. Narrow the changed files or use Git.`);
     }
     if (!old && current && current.size > MAX_NEW_FILE_BYTES) {
       throw new GitChangeError(`New file ${path} exceeds ${MAX_NEW_FILE_BYTES} bytes.`);
     }
-    const oldText = decode(old?.content, path), newText = decode(current?.content, path);
-    const oldLines = lines(oldText), newLines = lines(newText);
-    const operations = diffLines(oldLines, newLines, path);
-    // git apply strips one leading path component, so a creation or deletion needs its mode
-    // header; without it the "/dev/null" side is read as the literal path "dev/null".
-    parts.push([`diff --git a/${path} b/${path}`,
-      ...(old ? [] : ["new file mode 100644"]), ...(current ? [] : ["deleted file mode 100644"]),
-      `--- ${old ? `a/${path}` : "/dev/null"}`, `+++ ${current ? `b/${path}` : "/dev/null"}`,
-      ...formatHunks(operations)].join("\n") + "\n");
+    parts.push(buildFilePatch(path, old?.content, current?.content));
   }
   const diff = parts.join("\n");
   if (Buffer.byteLength(diff) > MAX_DIFF_BYTES) throw new GitChangeError(`Diff exceeds ${MAX_DIFF_BYTES} bytes. Narrow the task before review.`);
   return { paths, entries: paths.map((path) => `${before.has(path) ? after.has(path) ? " M" : " D" : "??"} ${path}`), diff };
+}
+
+/**
+ * One unified patch for one path. Shared with the Strict scanner so both produce the
+ * same patch text. git apply strips one leading path component, so a creation or a
+ * deletion needs its mode header; without it the "/dev/null" side is read as the
+ * literal path "dev/null".
+ */
+export function buildFilePatch(path: string, before: Buffer | undefined, after: Buffer | undefined): string {
+  const operations = diffLines(lines(decode(before, path)), lines(decode(after, path)), path);
+  return [`diff --git a/${path} b/${path}`,
+    ...(before ? [] : ["new file mode 100644"]), ...(after ? [] : ["deleted file mode 100644"]),
+    `--- ${before ? `a/${path}` : "/dev/null"}`, `+++ ${after ? `b/${path}` : "/dev/null"}`,
+    ...formatHunks(operations)].join("\n") + "\n";
 }
 
 function decode(content: Buffer | undefined, path: string): string {

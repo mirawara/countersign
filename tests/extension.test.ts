@@ -14,6 +14,7 @@ const information: string[] = [];
 const warnings: string[] = [];
 let repository = "";
 let resolveInput: ((value: string | undefined) => void) | undefined;
+let warningChoice: string | undefined;
 
 vi.mock("vscode", () => ({
   version: "1.95.0",
@@ -30,7 +31,7 @@ vi.mock("vscode", () => ({
     registerWebviewViewProvider: () => ({ dispose: () => undefined }),
     createOutputChannel: () => ({ show: () => undefined, appendLine: () => undefined, dispose: () => undefined }),
     showInformationMessage: (message: string) => { information.push(message); return Promise.resolve(undefined); },
-    showWarningMessage: (message: string) => { warnings.push(message); return Promise.resolve(undefined); },
+    showWarningMessage: (message: string) => { warnings.push(message); return Promise.resolve(warningChoice); },
     showErrorMessage: () => Promise.resolve(undefined),
     showInputBox: () => new Promise<string | undefined>((resolve) => { resolveInput = resolve; }),
   },
@@ -43,10 +44,11 @@ process.env.COUNTERSIGN_TEST_MODE = "1";
 afterEach(async () => {
   resolveInput?.(undefined);
   resolveInput = undefined;
-  deactivate();
+  await deactivate();
   callbacks.clear();
   information.length = 0;
   warnings.length = 0;
+  warningChoice = undefined;
   vi.restoreAllMocks();
   if (repository) await removeRepository(repository);
   repository = "";
@@ -55,7 +57,7 @@ afterEach(async () => {
 describe("VS Code command entry", () => {
   it("locks a workflow before the first async preflight so a second start is rejected", async () => {
     repository = await createCleanGitRepository();
-    activate({ subscriptions: [], workspaceState: { get: () => undefined, update: () => Promise.resolve() } } as unknown as vscode.ExtensionContext);
+    await activate({ subscriptions: [], workspaceState: { get: () => undefined, update: () => Promise.resolve() } } as unknown as vscode.ExtensionContext);
     const start = callbacks.get("countersign.startWorkflow");
     expect(start).toBeDefined();
     const first = Promise.resolve(start?.());
@@ -70,7 +72,7 @@ describe("VS Code command entry", () => {
   it("does not accept chat approval callbacks through the public VS Code command", async () => {
     repository = await createCleanGitRepository();
     vi.spyOn(ClaudeCliProvider.prototype, "checkAvailability").mockResolvedValue({ available: true });
-    activate({ subscriptions: [], workspaceState: { get: () => undefined, update: () => Promise.resolve() } } as unknown as vscode.ExtensionContext);
+    await activate({ subscriptions: [], workspaceState: { get: () => undefined, update: () => Promise.resolve() } } as unknown as vscode.ExtensionContext);
     const start = callbacks.get("countersign.startWorkflow") as unknown as (request: unknown) => Promise<unknown>;
     const injectedApproval = vi.fn(async () => true);
     const running = start({ task: "Injected task", interaction: { confirmPlan: injectedApproval } });
@@ -234,5 +236,56 @@ describe("VS Code command entry", () => {
     })).rejects.toThrow("The working tree changed during planning or approval.");
     expect(execute).not.toHaveBeenCalled();
     runtime.dispose();
+  });
+});
+
+describe("Strict interruption marker command", () => {
+  function runtimeWith(stored?: unknown): { runtime: ExtensionRuntime; read: () => unknown } {
+    const data = new Map<string, unknown>();
+    if (stored !== undefined) data.set("countersign.strict-interruption.v1", stored);
+    const context = {
+      subscriptions: [],
+      workspaceState: {
+        get: (key: string) => data.get(key),
+        update: (key: string, value: unknown) => {
+          if (value === undefined) data.delete(key);
+          else data.set(key, value);
+          return Promise.resolve();
+        },
+      },
+    } as unknown as vscode.ExtensionContext;
+    const runtime = new ExtensionRuntime(context);
+    runtime.register();
+    return { runtime, read: () => data.get("countersign.strict-interruption.v1") };
+  }
+
+  const foreignMarker = {
+    id: "task-1", hostId: "another-host", mode: "strict",
+    timestamp: "2026-10-22T09:00:00.000Z", outcome: "active",
+  };
+
+  it("registers the command and reports when no marker is stored", async () => {
+    runtimeWith();
+    const clear = callbacks.get("countersign.clearStrictInterruptionMarker");
+    expect(clear).toBeDefined();
+    await clear?.();
+    expect(information.at(-1)).toContain("No Strict interruption marker is stored.");
+  });
+
+  it("keeps the marker when the confirmation is cancelled", async () => {
+    const { read } = runtimeWith(foreignMarker);
+    warningChoice = undefined;
+    await callbacks.get("countersign.clearStrictInterruptionMarker")?.();
+    expect(warnings.at(-1)).toContain("Clear the Strict interruption marker?");
+    expect(read()).toMatchObject({ hostId: "another-host" });
+    expect(information.at(-1)).toContain("was kept");
+  });
+
+  it("removes only the metadata once the removal is confirmed", async () => {
+    const { read } = runtimeWith(foreignMarker);
+    warningChoice = "Clear marker";
+    await callbacks.get("countersign.clearStrictInterruptionMarker")?.();
+    expect(read()).toBeUndefined();
+    expect(information.at(-1)).toContain("No task was interrupted or resumed.");
   });
 });

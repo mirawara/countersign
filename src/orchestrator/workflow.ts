@@ -3,7 +3,7 @@ import { OrchestratorConfig } from "../configuration/config";
 import { GitChanges } from "../context/gitChanges";
 import { createWorkspaceChanges, WorkspaceChanges } from "../context/workspaceChanges";
 import { ProcessFailure } from "../shared/process";
-import { AgentResult, AIProvider, CheckResult, Finding, FindingSeverity, WorkflowEvent, WorkflowResult, WorkflowState } from "../shared/types";
+import { AgentResult, AIProvider, BalancedWorkflowEvent, BalancedWorkflowResult, BalancedWorkflowState, CheckResult, Finding, FindingSeverity } from "../shared/types";
 import { runLocalChecks } from "./localChecks";
 import { assertWorkflowTransition } from "./stateMachine";
 import { isFindingSeverity } from "../configuration/config";
@@ -17,11 +17,11 @@ export interface WorkflowInput {
   claude: AIProvider;
   codex: AIProvider;
   signal: AbortSignal;
-  onEvent: (event: WorkflowEvent) => void;
+  onEvent: (event: BalancedWorkflowEvent) => void;
   plan?: string;
-  clarifications?: WorkflowResult["clarifications"];
-  selectedModels?: WorkflowResult["selectedModels"];
-  initialMetrics?: WorkflowResult["metrics"];
+  clarifications?: BalancedWorkflowResult["clarifications"];
+  selectedModels?: BalancedWorkflowResult["selectedModels"];
+  initialMetrics?: BalancedWorkflowResult["metrics"];
   startingChanges?: GitChanges;
   startingEntries?: string[];
   tracker?: WorkspaceChanges;
@@ -30,12 +30,12 @@ export interface WorkflowInput {
   askPermission?: (tool: string, detail: string, signal: AbortSignal) => Promise<boolean>;
 }
 
-export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult> {
+export async function runWorkflow(input: WorkflowInput): Promise<BalancedWorkflowResult> {
   const taskId = randomUUID();
   const startedAt = new Date().toISOString();
   const checks: CheckResult[] = [];
-  const metrics: WorkflowResult["metrics"] = [...(input.initialMetrics ?? [])];
-  const events: WorkflowEvent[] = [];
+  const metrics: BalancedWorkflowResult["metrics"] = [...(input.initialMetrics ?? [])];
+  const events: BalancedWorkflowEvent[] = [];
   let workingTreeEntries: string[] = [];
   let startingChanges: GitChanges | undefined = input.startingChanges;
   let tracker: WorkspaceChanges | undefined = input.tracker;
@@ -43,7 +43,7 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
     tracker ??= await createWorkspaceChanges(input.repository);
     return tracker.read();
   };
-  let state: WorkflowState = "awaiting_confirmation";
+  let state: BalancedWorkflowState = "awaiting_confirmation";
   let simulatedDiff: string | undefined;
   let diff: string | undefined;
   let changedPaths: string[];
@@ -66,15 +66,16 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
   }, input.config.taskTimeoutMinutes * 60_000);
   timeout.unref();
 
-  const emit = (next: WorkflowState, message: string): void => {
-    assertWorkflowTransition(state, next);
+  const emit = (next: BalancedWorkflowState, message: string): void => {
+    assertWorkflowTransition("balanced", state, next);
     state = next;
-    const event = { taskId, state, message, timestamp: new Date().toISOString() };
+    const event: BalancedWorkflowEvent = { mode: "balanced", taskId, state, message, timestamp: new Date().toISOString() };
     events.push(event);
     input.onEvent(event);
   };
 
-  const makeResult = (message: string): WorkflowResult => ({
+  const makeResult = (message: string): BalancedWorkflowResult => ({
+    mode: "balanced",
     taskId,
     state,
     repository: input.repository,
@@ -420,11 +421,11 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
       }
     }
     if (timedOut || (error instanceof ProcessFailure && error.kind === "timed_out")) {
-      if ((state as WorkflowState) !== "timed_out") emit("timed_out", "Workflow timed out.");
+      if ((state as BalancedWorkflowState) !== "timed_out") emit("timed_out", "Workflow timed out.");
       return makeResult("Workflow exceeded the configured timeout.");
     }
     if (workflowController.signal.aborted || (error instanceof ProcessFailure && error.kind === "cancelled")) {
-      if ((state as WorkflowState) !== "cancelled") emit("cancelled", "Workflow cancelled.");
+      if ((state as BalancedWorkflowState) !== "cancelled") emit("cancelled", "Workflow cancelled.");
       return makeResult("Workflow cancelled.");
     }
     if (error instanceof ClaudeProviderError) {
@@ -436,7 +437,7 @@ export async function runWorkflow(input: WorkflowInput): Promise<WorkflowResult>
       else emit("failed", error.message);
       return makeResult(error.message);
     }
-    if ((state as WorkflowState) === "reviewing") {
+    if ((state as BalancedWorkflowState) === "reviewing") {
       emit("review_failed", errorMessage(error));
       return makeResult("Mock review failed.");
     }

@@ -25,6 +25,12 @@ const MOCK_BASE = {
 
 const CASES: IntegrationCase[] = [
   {
+    name: "strict-marker",
+    fixture: "mock-repo",
+    timeoutMs: 180_000,
+    settings: { ...MOCK_BASE, "countersign.localChecks": [] },
+  },
+  {
     name: "chat-mock",
     fixture: "mock-repo",
     timeoutMs: 180_000,

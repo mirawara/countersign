@@ -1,6 +1,7 @@
 import { lstat, readFile, realpath } from "node:fs/promises";
-import { isAbsolute, resolve, sep } from "node:path";
+import { resolve, sep } from "node:path";
 import { ProcessFailure, runExecutable } from "../shared/process";
+import { isBalancedExcludedPath } from "./pathPolicy";
 import { readGitStatus } from "./gitPreflight";
 
 export interface GitChanges {
@@ -78,14 +79,9 @@ export async function readGitChanges(repository: string): Promise<GitChanges> {
   return { entries, paths, diff: parts.join("\n") };
 }
 
+/** Derived from the shared path policy table; the rules and their semantics are unchanged. */
 export function validateReviewPath(path: string): void {
-  const normalized = path.replaceAll("\\", "/");
-  const name = normalized.split("/").at(-1)?.toLowerCase() ?? "";
-  if (!path || isAbsolute(path) || normalized.split("/").includes("..") || path.includes("\0") || path.includes("\n")
-    || /(^|\/)(node_modules|dist|build|coverage|\.git|\.cache|\.ssh|\.aws|\.gnupg)(\/|$)/i.test(normalized)
-    || /^\.env(?:\.|$)/i.test(name)
-    || /^(?:\.npmrc|\.pypirc|\.netrc|id_rsa|id_ed25519)$/i.test(name)
-    || /(?:^|[-_.])(?:secrets?|credentials?|tokens?|private[-_]?key)(?:[-_.]|$)|\.(?:pem|p12)$/i.test(name)) {
+  if (isBalancedExcludedPath(path)) {
     throw new GitChangeError(`Changed path ${JSON.stringify(path)} is excluded from AI review.`);
   }
 }

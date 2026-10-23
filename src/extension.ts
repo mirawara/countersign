@@ -1,5 +1,9 @@
 import * as vscode from "vscode";
+import { readFile, realpath, stat, unlink } from "node:fs/promises";
+import { isAbsolute, join } from "node:path";
 import { ChatController } from "./chat/controller";
+import { AccountProfiles } from "./chat/accountProfiles";
+import { runExecutable } from "./shared/process";
 import { OrchestratorConfig, validateConfiguration } from "./configuration/config";
 import { inspectClaude } from "./chat/claudeAdapter";
 import { inspectCodex } from "./chat/codexAdapter";
@@ -13,18 +17,54 @@ import { ClaudeCliProvider } from "./providers/claudeCliProvider";
 import { verifyClaudeSettingsGate } from "./providers/claudeGate";
 import { clearClaudeGateRecord, loadClaudeGateRecord, saveClaudeGateRecord } from "./providers/claudeGateStore";
 import { MockProvider } from "./providers/mockProvider";
-import { WorkflowEvent, WorkflowResult, WorkflowState } from "./shared/types";
+import { BalancedWorkflowResult, WorkflowEvent, WorkflowState } from "./shared/types";
 import { acquireRepositoryLock } from "./shared/repositoryLock";
-import { WorkflowStartRequest } from "./shared/workflowInteraction";
+import { StrictWorkflowStartRequest, WorkflowAccountSelection, WorkflowStartRequest } from "./shared/workflowInteraction";
+import { runStrictTask } from "./orchestrator/strictTask";
+import { StrictClaudeProvider } from "./providers/strictClaudeProvider";
+import { StrictCodexProvider } from "./providers/strictCodexProvider";
+import { runLocalChecks } from "./orchestrator/localChecks";
+import { StrictWorkflowResult } from "./shared/strict";
+import { canonicalizeStrictPlan } from "./orchestrator/strictPlanHash";
+import { preflightGit } from "./context/gitPreflight";
+import { describeStrictMarkerStatus, STRICT_INTERRUPTION_MARKER_KEY, StrictMarkerStore } from "./shared/strictMarker";
 
 export class ExtensionRuntime {
   private readonly output = vscode.window.createOutputChannel("Countersign");
   private currentState: WorkflowState = "idle";
   private lastStartIssue: string | undefined;
   private activeController: AbortController | undefined;
-  private latestResult: WorkflowResult | undefined;
+  private strictTaskPromise: Promise<StrictWorkflowResult> | undefined;
+  private latestResult: BalancedWorkflowResult | undefined;
+  private readonly strictMarkers: StrictMarkerStore;
 
-  constructor(private readonly context: vscode.ExtensionContext) {}
+  constructor(private readonly context: vscode.ExtensionContext) {
+    this.strictMarkers = new StrictMarkerStore(context.workspaceState);
+  }
+
+  /**
+   * Consume an explicit, one-time confirmation for a specific stale marker. The request
+   * lives outside VS Code's cached workspace memento so a reload cannot restore the old
+   * value before workspaceState.update removes it through VS Code itself.
+   */
+  async recoverConfirmedMarker(): Promise<void> {
+    const requestFile = join(this.context.globalStorageUri.fsPath, "confirmed-strict-marker-clear.json");
+    let request: unknown;
+    try { request = JSON.parse(await readFile(requestFile, "utf8")); }
+    catch { return; }
+    if (!request || typeof request !== "object" || Array.isArray(request)) return;
+    const confirmed = request as Record<string, unknown>;
+    const folders = vscode.workspace.workspaceFolders;
+    if (folders?.length !== 1 || folders[0].uri.fsPath !== confirmed.workspace) return;
+    const age = typeof confirmed.confirmedAt === "string" ? Date.now() - Date.parse(confirmed.confirmedAt) : NaN;
+    if (typeof confirmed.markerId !== "string" || !Number.isFinite(age) || age < 0 || age > 86_400_000) return;
+    const status = this.strictMarkers.status();
+    if (status.kind === "undeterminable" && status.marker.id === confirmed.markerId) {
+      await this.strictMarkers.clear();
+      this.output.appendLine("Cleared the specifically confirmed, inactive Strict marker on activation.");
+    }
+    await unlink(requestFile).catch(() => undefined);
+  }
 
   register(): void {
     this.context.subscriptions.push(
@@ -37,14 +77,27 @@ export class ExtensionRuntime {
       vscode.commands.registerCommand("countersign.showDiff", () => this.showDiff()),
       vscode.commands.registerCommand("countersign.showReview", () => this.showReview()),
       vscode.commands.registerCommand("countersign.showCheckResults", () => this.showCheckResults()),
+      vscode.commands.registerCommand("countersign.clearStrictInterruptionMarker", () => this.clearStrictInterruptionMarker()),
     );
+    if (process.env.COUNTERSIGN_TEST_MODE === "1") {
+      // Test-only: lets the packaged integration case seed and read the lifecycle marker.
+      this.context.subscriptions.push(vscode.commands.registerCommand("countersign.strictMarkerState",
+        async (marker?: unknown) => {
+          if (marker !== undefined) await this.context.workspaceState.update(STRICT_INTERRUPTION_MARKER_KEY, marker);
+          return this.context.workspaceState.get<unknown>(STRICT_INTERRUPTION_MARKER_KEY);
+        }));
+    }
   }
 
-  dispose(): void {
+  async dispose(): Promise<void> {
     this.activeController?.abort();
+    // VS Code awaits deactivate() on an ordinary Reload Window. Let the cancelled
+    // task release its provider process and workspace before a new host may start.
+    await this.strictTaskPromise?.catch(() => undefined);
+    await this.strictMarkers.interruptForShutdown();
   }
 
-  async startChatWorkflow(request: WorkflowStartRequest): Promise<WorkflowResult> {
+  async startChatWorkflow(request: WorkflowStartRequest): Promise<BalancedWorkflowResult> {
     const result = await this.startWorkflow(request);
     if (result) return result;
     throw new Error(this.lastStartIssue ?? `Workflow stopped before execution (${this.currentState}). Check the Countersign Output Channel.`);
@@ -54,7 +107,118 @@ export class ExtensionRuntime {
     this.cancelWorkflow();
   }
 
-  private async startWorkflow(request?: WorkflowStartRequest): Promise<WorkflowResult | undefined> {
+  /**
+   * One Strict task from the sidebar. The repository lock, the lifecycle marker and the
+   * provider sessions all live inside runStrictTask; nothing here survives a restart.
+   */
+  async startStrictWorkflow(request: StrictWorkflowStartRequest): Promise<StrictWorkflowResult> {
+    if (this.activeController) throw new Error("A workflow is already running.");
+    const folders = vscode.workspace.workspaceFolders;
+    if (!vscode.workspace.isTrusted) throw new Error("Strict needs a trusted workspace.");
+    if (process.platform !== "linux") throw new Error("Strict is verified on Linux only.");
+    if (!folders || folders.length !== 1) throw new Error("Open exactly one workspace folder for Strict.");
+    const repository = folders[0].uri.fsPath;
+    const accounts = await resolveAccountSelection(request.accounts);
+    let config = validateConfiguration({ ...readConfiguration(), provider: "claude", codexProvider: "real",
+      ...request.selection, executionPermission: request.executionPermission });
+    const controller = new AbortController();
+    this.activeController = controller;
+    const onAbort = (): void => controller.abort();
+    request.signal.addEventListener("abort", onAbort, { once: true });
+    if (request.signal.aborted) controller.abort();
+    const ensureActive = (): void => {
+      if (controller.signal.aborted) throw new Error("Strict task cancelled.");
+    };
+    try {
+      await vscode.commands.executeCommand("setContext", "countersign.strictTaskActive", true);
+      ensureActive();
+      const reconciled = await reconcileSelectedModels(config, repository, true, accounts);
+      config = { ...config, claudeModel: reconciled.claudeModel, claudeEffort: reconciled.claudeEffort,
+        codexModel: reconciled.codexModel, codexEffort: reconciled.codexEffort };
+      for (const warning of reconciled.warnings) {
+        this.output.appendLine(`[${new Date().toLocaleTimeString()}] selection: ${warning}`);
+        void vscode.window.showWarningMessage(warning);
+      }
+      ensureActive();
+      this.output.appendLine("--- Countersign Strict task ---");
+      this.output.appendLine(`Workspace: ${repository}`);
+      const gateRecord = await loadClaudeGateRecord();
+      ensureActive();
+      if (gateRecord?.passed !== true) {
+        throw new Error("Strict needs the Claude settings-source isolation gate. Run Countersign: Verify Claude Settings Isolation.");
+      }
+      // Best-effort, for the warning below only. It never decides where a command runs:
+      // every Git command Strict issues goes through the pinned root instead.
+      let hasGitRoot = true;
+      try { await preflightGit(repository, controller.signal); }
+      catch {
+        ensureActive();
+        hasGitRoot = false;
+      }
+      ensureActive();
+      if (!hasGitRoot) {
+        void vscode.window.showWarningMessage(
+          "This folder has no Git repository root. Countersign cannot revert Strict changes here.");
+      }
+      const claude = new StrictClaudeProvider({ config, gateRecord, accountDir: accounts.claudeConfigDir,
+        askPermission: request.interaction.askPermission });
+      const codex = new StrictCodexProvider({ executable: config.codexExecutable, model: config.codexModel,
+        effort: config.codexEffort, accountDir: accounts.codexHome, gracePeriodMs: config.terminationGracePeriodMs,
+        // Codex runs in the pinned root, which is not a path it can recognise as a
+        // repository; its own repo check would refuse the turn for the wrong reason.
+        skipGitRepoCheck: true });
+      const taskPromise = runStrictTask({
+        repository,
+        task: request.task,
+        localChecks: config.localChecks,
+        limitOverrides: {},
+        planningClaude: claude,
+        planningCodex: codex,
+        implementationClaude: claude,
+        reviewCodex: codex,
+        selectedModels: { claudeModel: config.claudeModel, claudeEffort: config.claudeEffort,
+          codexModel: config.codexModel, codexEffort: config.codexEffort },
+        human: {
+          askQuestion: (question, signal) => request.interaction.askQuestion(question.question, signal),
+          requestApproval: async (approval, signal) => {
+            const answer = await request.interaction.approvePlan({
+              planText: planText(approval.plan),
+              planHash: approval.planHash,
+              expectedFileCount: approval.expectedFileCount,
+              expectedFilesComplete: approval.expectedFilesComplete,
+              executionPermission: request.executionPermission,
+            }, signal);
+            if (!answer?.approved) return { kind: "refuse", note: "The plan was refused in the chat." };
+            return { kind: "approve", executionPermission: answer.executionPermission };
+          },
+        },
+        pause: {
+          onPause: (info, signal) => request.interaction.onPause(
+            `Phase B made no verifiable progress for ${info.cyclesWithoutProgress} cycles. Resume in this window, or stop the task.`,
+            signal),
+        },
+        // The checks run in the pinned root, like the providers: a path replaced before
+        // the spawn cannot move them into another tree.
+        runChecks: (checks, signal, workingDirectory) => runLocalChecks(checks, workingDirectory,
+          config.checkTimeoutMinutes * 60_000, config.terminationGracePeriodMs, signal),
+        markers: this.strictMarkers,
+        signal: controller.signal,
+        onEvent: (event) => {
+          this.logState(event.state, event.message);
+          request.onEvent?.(event);
+        },
+      });
+      this.strictTaskPromise = taskPromise;
+      try { return await taskPromise; }
+      finally { if (this.strictTaskPromise === taskPromise) this.strictTaskPromise = undefined; }
+    } finally {
+      request.signal.removeEventListener("abort", onAbort);
+      try { await vscode.commands.executeCommand("setContext", "countersign.strictTaskActive", false); }
+      finally { if (this.activeController === controller) this.activeController = undefined; }
+    }
+  }
+
+  private async startWorkflow(request?: WorkflowStartRequest): Promise<BalancedWorkflowResult | undefined> {
     if (this.activeController) {
       void vscode.window.showInformationMessage("A workflow is already running.");
       if (request?.interaction) throw new Error("A workflow is already running.");
@@ -107,8 +271,10 @@ export class ExtensionRuntime {
         return;
       }
       if (config.provider === "claude") {
+        const accounts = await resolveAccountSelection(request?.accounts);
         const status = await new ClaudeCliProvider({
           config,
+          accountDir: accounts.claudeConfigDir,
           gateRecord: await loadClaudeGateRecord(),
         }).checkAvailability();
         if (!status.available) {
@@ -124,11 +290,13 @@ export class ExtensionRuntime {
       }
 
       let repository: string;
+      let accounts: WorkflowAccountSelection;
       let startingChanges: GitChanges;
       let tracker: WorkspaceChanges;
       try {
         tracker = await createWorkspaceChanges(folders[0].uri.fsPath);
         repository = tracker.root;
+        accounts = await resolveAccountSelection(request?.accounts);
         startingChanges = await tracker.read();
       } catch (error) {
         if (error instanceof GitPreflightError) {
@@ -148,7 +316,13 @@ export class ExtensionRuntime {
       }
 
       try {
-        await validateSelectedModels(config, repository, Boolean(request?.interaction));
+        const reconciled = await reconcileSelectedModels(config, repository, Boolean(request?.interaction), accounts);
+        config = { ...config, claudeModel: reconciled.claudeModel, claudeEffort: reconciled.claudeEffort,
+          codexModel: reconciled.codexModel, codexEffort: reconciled.codexEffort };
+        for (const warning of reconciled.warnings) {
+          this.output.appendLine(`[${new Date().toLocaleTimeString()}] selection: ${warning}`);
+          void vscode.window.showWarningMessage(warning);
+        }
       } catch (error) {
         this.currentState = "blocked_provider";
         this.lastStartIssue = errorMessage(error);
@@ -177,11 +351,12 @@ export class ExtensionRuntime {
       }
 
       let plan: string | undefined;
-      const clarifications: NonNullable<WorkflowResult["clarifications"]> = [];
-      const planningMetrics: WorkflowResult["metrics"] = [];
+      const clarifications: NonNullable<BalancedWorkflowResult["clarifications"]> = [];
+      const planningMetrics: BalancedWorkflowResult["metrics"] = [];
       if (config.provider === "claude") {
         this.currentState = "awaiting_input";
-        const planner = new ClaudeCliProvider({ config, gateRecord: await loadClaudeGateRecord() });
+        const planner = new ClaudeCliProvider({ config, accountDir: accounts.claudeConfigDir,
+          gateRecord: await loadClaudeGateRecord() });
         for (let round = 0; round < 4; round++) {
           await assertStartingChanges(tracker, startingChanges);
           const proposal = await planner.proposePlan(repository, task.trim(),
@@ -219,6 +394,7 @@ export class ExtensionRuntime {
           ? `Git had ${tracker.startingEntries.length} existing change(s) when this workflow began. A file snapshot records that baseline; Codex reviews only changes made after it. Earlier Git entries are preserved and excluded from review.${existingGitEntries}\nGenerated directories are excluded from review and reporting.`
           : "Git working tree was clean at the start of the workflow.",
         `Task: ${task.trim()}`,
+        `Accounts for this task: Claude ${accounts.claudeLabel}; Codex ${accounts.codexLabel}.`,
         `Claude model: ${config.provider === "claude" ? config.claudeModel || "CLI default" : "Mock"}; effort: ${config.provider === "claude" ? config.claudeEffort || "CLI default" : "Mock"}.`,
         `Codex model: ${config.codexProvider === "real" ? config.codexModel || "CLI default" : "Mock"}; reasoning effort: ${config.codexProvider === "real" ? config.codexEffort || "CLI default" : "Mock"}.`,
         config.provider === "mock" ? "Claude tools: mock uses none." : config.executionPermission === "fullAccess"
@@ -310,7 +486,8 @@ export class ExtensionRuntime {
 
       try {
         const claude = config.provider === "claude"
-          ? new ClaudeCliProvider({ config, gateRecord: await loadClaudeGateRecord(),
+          ? new ClaudeCliProvider({ config, accountDir: accounts.claudeConfigDir,
+              gateRecord: await loadClaudeGateRecord(),
               askPermission: request?.interaction?.askPermission ?? (async (tool, detail) =>
                 await vscode.window.showWarningMessage(`Allow Claude ${tool}?`, { modal: true, detail }, "Allow once") === "Allow once"),
             })
@@ -318,6 +495,7 @@ export class ExtensionRuntime {
         const codex = config.codexProvider === "real"
           ? new CodexCliProvider({
               executable: config.codexExecutable,
+              accountDir: accounts.codexHome,
               model: config.codexModel,
               effort: config.codexEffort,
               timeoutMs: config.providerTimeoutMinutes * 60_000,
@@ -401,6 +579,37 @@ export class ExtensionRuntime {
     this.output.appendLine(lines.join("\n"));
   }
 
+  /**
+   * The one explicit exception to marker ownership. It deletes metadata only: it does not
+   * interrupt a task that may still be alive in another window, does not resume anything,
+   * and creates no cross-window lock.
+   */
+  private async clearStrictInterruptionMarker(): Promise<void> {
+    if (this.strictMarkers.ownsActiveTask()) {
+      void vscode.window.showWarningMessage(
+        "This window owns an active Strict task. Stop it before clearing the interruption marker.");
+      return;
+    }
+    const status = this.strictMarkers.status();
+    if (status.kind === "none") {
+      void vscode.window.showInformationMessage("No Strict interruption marker is stored.");
+      return;
+    }
+    const detail = [
+      describeStrictMarkerStatus(status),
+      "Removing it deletes only this metadata. It does not interrupt a task that may still be running in another window, does not resume or repeat anything, and does not create a lock between windows.",
+    ].join("\n\n");
+    const confirmed = await vscode.window.showWarningMessage(
+      "Clear the Strict interruption marker?", { modal: true, detail }, "Clear marker") === "Clear marker";
+    if (!confirmed) {
+      void vscode.window.showInformationMessage("The Strict interruption marker was kept.");
+      return;
+    }
+    await this.strictMarkers.clear();
+    void vscode.window.showInformationMessage(
+      "The Strict interruption marker was removed. No task was interrupted or resumed.");
+  }
+
   private onEvent(event: WorkflowEvent): void {
     this.currentState = event.state;
     this.logState(event.state, event.message);
@@ -411,7 +620,7 @@ export class ExtensionRuntime {
     this.output.appendLine(`[${new Date().toLocaleTimeString()}] ${state}: ${message}`);
   }
 
-  private writeSummary(result: WorkflowResult): void {
+  private writeSummary(result: BalancedWorkflowResult): void {
     this.output.appendLine(summarizeWorkflow(result));
   }
 
@@ -471,7 +680,9 @@ export class ExtensionRuntime {
       if (controller.signal.aborted) return;
       await clearClaudeGateRecord();
       try {
-        const record = await verifyClaudeSettingsGate(config, controller.signal);
+        const accountDir = new AccountProfiles(this.context.globalState ?? this.context.workspaceState)
+          .selected("claude")?.directory;
+        const record = await verifyClaudeSettingsGate(config, controller.signal, runExecutable, accountDir);
         await saveClaudeGateRecord(record);
         this.output.appendLine(`Claude settings-source gate passed for ${record.version} at ${record.passedAt}.`);
         void vscode.window.showInformationMessage(`Claude settings-source gate passed for ${record.version}.`);
@@ -485,22 +696,75 @@ export class ExtensionRuntime {
   }
 }
 
-async function validateSelectedModels(config: OrchestratorConfig, repository: string, requireSubscription = false): Promise<void> {
+/**
+ * Reconciles a saved selection with the catalogue the installed provider actually exposes.
+ * A model or a level that is no longer offered is not an error: the turn falls back to the
+ * CLI default for it and says so, because a stored preference should never silently decide
+ * a run, and should never block one either.
+ */
+export interface SelectionReconciliation {
+  claudeModel: string;
+  claudeEffort: string;
+  codexModel: string;
+  codexEffort: string;
+  warnings: string[];
+}
+
+async function reconcileSelectedModels(
+  config: OrchestratorConfig,
+  repository: string,
+  requireSubscription = false,
+  accounts?: WorkflowAccountSelection,
+): Promise<SelectionReconciliation> {
+  const result: SelectionReconciliation = {
+    claudeModel: config.claudeModel, claudeEffort: config.claudeEffort,
+    codexModel: config.codexModel, codexEffort: config.codexEffort, warnings: [],
+  };
   if (config.provider === "claude" && (config.claudeModel || requireSubscription)) {
-    const info = await inspectClaude(config.claudeExecutable, repository);
+    const info = await inspectClaude(config.claudeExecutable, repository, accounts?.claudeConfigDir);
     const selected = info.models.find((entry) => entry.value === config.claudeModel);
-    if (config.claudeModel && (!selected || (config.claudeEffort && !selected.effortLevels.includes(config.claudeEffort)))) {
-      throw new Error("The selected Claude model or effort is unavailable for the active account.");
+    if (config.claudeModel && !selected) {
+      result.warnings.push(`Claude model ${config.claudeModel} is not in this account's catalogue; the CLI default is used.`);
+      result.claudeModel = "";
+      result.claudeEffort = "";
+    } else if (selected && config.claudeEffort && !selected.effortLevels.some((level) => level.value === config.claudeEffort)) {
+      result.warnings.push(`Claude effort ${config.claudeEffort} is not offered for ${selected.label}; the CLI default is used.`);
+      result.claudeEffort = "";
     }
   }
   if (config.codexProvider === "real" && (config.codexModel || requireSubscription)) {
-    const info = await inspectCodex(config.codexExecutable, repository);
+    const info = await inspectCodex(config.codexExecutable, repository, accounts?.codexHome);
     const selected = info.models.find((entry) => entry.value === config.codexModel);
-    if (config.codexModel && (!selected || (config.codexEffort && !selected.effortLevels.includes(config.codexEffort)))) {
-      throw new Error("The selected Codex model or reasoning effort is unavailable for the active account.");
+    if (config.codexModel && !selected) {
+      result.warnings.push(`Codex model ${config.codexModel} is not in this account's catalogue; the CLI default is used.`);
+      result.codexModel = "";
+      result.codexEffort = "";
+    } else if (selected && config.codexEffort && !selected.effortLevels.some((level) => level.value === config.codexEffort)) {
+      result.warnings.push(`Codex reasoning effort ${config.codexEffort} is not offered for ${selected.label}; the CLI default is used.`);
+      result.codexEffort = "";
     }
   }
+  return result;
 }
+
+async function resolveAccountSelection(input?: WorkflowAccountSelection): Promise<WorkflowAccountSelection> {
+  const directory = async (value: string | undefined, provider: string): Promise<string | undefined> => {
+    if (value === undefined) return undefined;
+    if (!isAbsolute(value)) throw new Error(`${provider} CLI profile must use an absolute directory.`);
+    try {
+      const canonical = await realpath(value);
+      if (!(await stat(canonical)).isDirectory()) throw new Error("not a directory");
+      return canonical;
+    } catch { throw new Error(`The selected ${provider} CLI profile directory is unavailable.`); }
+  };
+  return {
+    claudeConfigDir: await directory(input?.claudeConfigDir, "Claude"),
+    codexHome: await directory(input?.codexHome, "Codex"),
+    claudeLabel: input?.claudeLabel?.slice(0, 80) || "Current Claude CLI login",
+    codexLabel: input?.codexLabel?.slice(0, 80) || "Current Codex CLI login",
+  };
+}
+
 
 function readConfiguration(): Record<string, unknown> {
   const config = vscode.workspace.getConfiguration("countersign");
@@ -542,19 +806,38 @@ function errorMessage(error: unknown): string {
 let runtime: ExtensionRuntime | undefined;
 let chatRuntime: ChatController | undefined;
 
-export function activate(context: vscode.ExtensionContext): void {
+export async function activate(context: vscode.ExtensionContext): Promise<void> {
   runtime = new ExtensionRuntime(context);
+  try { await runtime.recoverConfirmedMarker(); }
+  catch (error) { console.error("Countersign could not clear the confirmed Strict marker:", error); }
   runtime.register();
   chatRuntime = new ChatController(context, {
     start: (request) => runtime!.startChatWorkflow(request),
+    startStrict: (request) => runtime!.startStrictWorkflow(request),
     cancel: () => runtime!.cancelChatWorkflow(),
   });
   chatRuntime.register();
 }
 
-export function deactivate(): void {
+export async function deactivate(): Promise<void> {
   chatRuntime?.dispose();
   chatRuntime = undefined;
-  runtime?.dispose();
+  await runtime?.dispose();
   runtime = undefined;
+}
+
+/** A readable rendering of the canonical plan for the chat approval message. */
+function planText(plan: import("./shared/strict").StrictPlan): string {
+  const canonical = canonicalizeStrictPlan(plan);
+  return [
+    `Objective: ${canonical.plan.objective}`,
+    canonical.plan.constraints.length ? `Constraints:\n${canonical.plan.constraints.map((item) => `- ${item}`).join("\n")}` : "",
+    `Acceptance criteria:\n${canonical.plan.acceptanceCriteria.map((item) => `- ${item}`).join("\n")}`,
+    `Expected files (${canonical.plan.expectedFilesComplete ? "complete" : "incomplete or not estimable"}):\n${canonical.plan.expectedFiles.map((item) => `- ${item}`).join("\n") || "- none listed"}`,
+    canonical.plan.risks.length ? `Risks:\n${canonical.plan.risks.map((item) => `- ${item}`).join("\n")}` : "",
+    canonical.plan.checks.length ? `Checks: ${canonical.plan.checks.join(", ")}` : "Checks: none authorised",
+    canonical.plan.questions.length
+      ? `Decisions:\n${canonical.plan.questions.map((item) => `- ${item.question}: ${item.answer ?? "unanswered"}`).join("\n")}`
+      : "",
+  ].filter(Boolean).join("\n\n");
 }

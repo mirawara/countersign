@@ -268,8 +268,8 @@ describe("mock BALANCED workflow", () => {
   });
 
   it("allows the correction path to end cleanly after checks", () => {
-    expect(() => assertWorkflowTransition("running_checks", "completed_clean")).not.toThrow();
-    expect(() => assertWorkflowTransition("running_checks", "completed_with_findings")).not.toThrow();
+    expect(() => assertWorkflowTransition("balanced", "running_checks", "completed_clean")).not.toThrow();
+    expect(() => assertWorkflowTransition("balanced", "running_checks", "completed_with_findings")).not.toThrow();
   });
 
   it("marks all declared final outcomes as terminal", () => {
