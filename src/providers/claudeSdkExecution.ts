@@ -39,7 +39,7 @@ export async function runClaudeSdkExecution(config: OrchestratorConfig, request:
     outputFormat: { type: "json_schema", schema },
     ...(config.claudeModel ? { model: config.claudeModel } : {}),
     ...(config.claudeEffort ? { effort: config.claudeEffort as "low" | "medium" | "high" | "max" } : {}),
-    maxTurns: 30, maxBudgetUsd: config.budgetGuardUsd, abortController: controller,
+    maxTurns: 30, abortController: controller,
   } });
   let result: string | undefined;
   let subscriptionConfirmed = false;

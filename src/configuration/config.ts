@@ -22,7 +22,6 @@ export interface OrchestratorConfig {
   mockScenario: MockScenario;
   claudeAllowedTools: string[];
   localChecks: LocalCheck[];
-  budgetGuardUsd: number;
   taskTimeoutMinutes: number;
   providerTimeoutMinutes: number;
   checkTimeoutMinutes: number;
@@ -115,7 +114,6 @@ export function validateConfiguration(raw: RawConfiguration): OrchestratorConfig
     mockScenario: scenario,
     claudeAllowedTools: tools,
     localChecks,
-    budgetGuardUsd: boundedNumber(raw.budgetGuardUsd, 1, 0.01, 100),
     taskTimeoutMinutes: boundedNumber(raw.taskTimeoutMinutes, 30, 1, 180),
     providerTimeoutMinutes: boundedNumber(raw.providerTimeoutMinutes, 15, 1, 60),
     checkTimeoutMinutes: boundedNumber(raw.checkTimeoutMinutes, 5, 1, 30),

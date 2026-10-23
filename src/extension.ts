@@ -230,7 +230,7 @@ export class ExtensionRuntime {
         `Finding threshold for the correction path: ${config.findingThreshold}`,
         config.provider === "mock"
           ? "Implementation: mock only. Changes are simulated in memory; the mock does not edit files."
-          : `Implementation: real Claude CLI (${config.claudeExecutable}) may consume account quota. The estimated budget guard is ${config.budgetGuardUsd} USD per invocation; it is not a billing cap.`,
+          : `Implementation: real Claude CLI (${config.claudeExecutable}) may consume account quota.`,
         config.codexProvider === "real"
           ? `Review: real Codex CLI (${config.codexExecutable}) in a read-only sandbox. It receives the task and ${config.provider === "mock" ? "simulated" : "actual"} workflow diff, can inspect workspace files as context, and may consume account quota. The invocation ignores Codex config.toml and user/project execpolicy rules; CODEX_HOME authentication remains available.`
           : "Review: mock Codex; no AI provider request is made.",
@@ -514,7 +514,6 @@ function readConfiguration(): Record<string, unknown> {
     executionPermission: config.get<unknown>("executionPermission", "askBeforeChange"),
     claudeAllowedTools: config.get<unknown>("claudeAllowedTools", ["Read", "Glob", "Grep", "Edit", "Write"]),
     localChecks: config.get<unknown>("localChecks", []),
-    budgetGuardUsd: config.get<unknown>("budgetGuardUsd", 1),
     taskTimeoutMinutes: config.get<unknown>("taskTimeoutMinutes", 30),
     providerTimeoutMinutes: config.get<unknown>("providerTimeoutMinutes", 15),
     checkTimeoutMinutes: config.get<unknown>("checkTimeoutMinutes", 5),

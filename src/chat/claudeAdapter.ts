@@ -95,7 +95,7 @@ export async function runClaudeTurn(options: ClaudeTurn): Promise<ClaudeTurnResu
       tool_name?: string; tool_input?: unknown }) => claudeToolPolicy(options.cwd, input, !planning)] }] } } : {}),
     includePartialMessages: true,
     model: options.model, ...(options.effort ? { effort: options.effort as "low" | "medium" | "high" | "xhigh" | "max" } : {}),
-    maxTurns: 12, maxBudgetUsd: 2, abortController: controller,
+    maxTurns: 12, abortController: controller,
     ...(!fullAccess ? { canUseTool: async (tool: string, input: Record<string, unknown>, request: { signal: AbortSignal }) => {
       if (controller.signal.aborted || request.signal.aborted) return { behavior: "deny", message: "Turn cancelled." };
       if (!tools.includes(tool)) {

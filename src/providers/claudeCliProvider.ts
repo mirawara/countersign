@@ -94,7 +94,6 @@ export class ClaudeCliProvider implements AIProvider {
     const fullAccess = config.executionPermission === "fullAccess";
     const args = [
       "--print", "--output-format", "json", "--json-schema", JSON.stringify(RESPONSE_SCHEMA),
-      "--max-budget-usd", String(config.budgetGuardUsd),
       "--setting-sources", "", "--strict-mcp-config", "--disable-slash-commands",
       ...(fullAccess ? ["--dangerously-skip-permissions"] : ["--permission-mode", "default"]),
       "--no-session-persistence",
@@ -155,8 +154,7 @@ export class ClaudeCliProvider implements AIProvider {
     try {
       result = await this.run(config.claudeExecutable, [
         "--print", "--output-format", "json", "--json-schema", JSON.stringify(PLAN_SCHEMA),
-        "--max-budget-usd", String(config.budgetGuardUsd),
-        "--setting-sources", "", "--strict-mcp-config", "--disable-slash-commands",
+          "--setting-sources", "", "--strict-mcp-config", "--disable-slash-commands",
         "--permission-mode", "dontAsk", "--no-session-persistence",
         "--tools", readTools, "--allowedTools", readTools,
         ...(config.claudeModel ? ["--model", config.claudeModel] : []),
@@ -200,7 +198,7 @@ export class ClaudeCliProvider implements AIProvider {
 }
 
 export function requiredCapabilities(help: string): string[] {
-  const required = ["--print", "--output-format", "--json-schema", "--max-budget-usd", "--setting-sources", "--strict-mcp-config", "--disable-slash-commands", "--tools", "--allowedTools", "--permission-mode", "--no-session-persistence"];
+  const required = ["--print", "--output-format", "--json-schema", "--setting-sources", "--strict-mcp-config", "--disable-slash-commands", "--tools", "--allowedTools", "--permission-mode", "--no-session-persistence"];
   return required.filter((flag) => !new RegExp(`(?:^|[\\s,])${flag}(?=[\\s,]|$)`, "m").test(help));
 }
 

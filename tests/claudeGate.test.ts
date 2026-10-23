@@ -6,7 +6,7 @@ import { verifyClaudeSettingsGate } from "../src/providers/claudeGate";
 import { ProcessResult } from "../src/shared/process";
 
 const config = validateConfiguration({ provider: "claude", codexProvider: "real" });
-const HELP = "--print --output-format --json-schema --max-budget-usd --setting-sources --strict-mcp-config --disable-slash-commands --tools --allowedTools --permission-mode --no-session-persistence";
+const HELP = "--print --output-format --json-schema --setting-sources --strict-mcp-config --disable-slash-commands --tools --allowedTools --permission-mode --no-session-persistence";
 
 describe("Claude settings-source gate", () => {
   it("records a version only when the control hook fires and the empty source suppresses it", async () => {

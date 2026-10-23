@@ -60,7 +60,7 @@ export async function verifyClaudeChatGate(executable: string): Promise<ClaudeCh
       ...(resume ? { resume: sessionId } : { sessionId }),
       settingSources: sources, strictMcpConfig: true, mcpServers: {}, tools: [], allowedTools: [],
       permissionMode: "default", canUseTool: async () => ({ behavior: "deny", message: "Gate tools disabled." }),
-      effort: "low", maxTurns: 1, maxBudgetUsd: 0.3, includePartialMessages: true, abortController: controller,
+      effort: "low", maxTurns: 1, includePartialMessages: true, abortController: controller,
     } });
     let output = "";
     let success = false;

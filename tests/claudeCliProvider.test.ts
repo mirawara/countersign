@@ -8,7 +8,7 @@ import { createCleanGitRepository, removeRepository } from "./helpers/git";
 
 const repositories: string[] = [];
 afterEach(async () => Promise.all(repositories.splice(0).map(removeRepository)));
-const HELP = "--print --output-format --json-schema --max-budget-usd --setting-sources --strict-mcp-config --disable-slash-commands --tools --allowedTools --permission-mode --no-session-persistence";
+const HELP = "--print --output-format --json-schema --setting-sources --strict-mcp-config --disable-slash-commands --tools --allowedTools --permission-mode --no-session-persistence";
 const config = validateConfiguration({ provider: "claude", codexProvider: "real", executionPermission: "fullAccess" });
 const gateRecord = { version: "2.1.109 (Claude Code)", passedAt: "2026-10-19T00:00:00.000Z", passed: true as const };
 

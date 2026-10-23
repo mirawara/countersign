@@ -40,7 +40,7 @@ export async function verifyClaudeSettingsGate(
     await writeFile(join(claudeDir, "settings.json"), JSON.stringify(settings), { mode: 0o600 });
 
     const common = [
-      "--print", "--output-format", "json", "--max-budget-usd", String(config.budgetGuardUsd),
+      "--print", "--output-format", "json",
       "--strict-mcp-config", "--disable-slash-commands", "--permission-mode", "default",
       "--no-session-persistence", "--tools", "", "--allowedTools", "",
     ];

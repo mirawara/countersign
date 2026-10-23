@@ -88,7 +88,6 @@ const CASES: IntegrationCase[] = [
       "countersign.claudeExecutable": "claude",
       "countersign.codexExecutable": "codex",
       "countersign.claudeAllowedTools": ["Read", "Glob", "Grep", "Edit", "Write"],
-      "countersign.budgetGuardUsd": 1,
       "countersign.findingThreshold": "High",
       "countersign.localChecks": [{ id: "node-tests", executable: "node", args: ["--test"] }],
     },

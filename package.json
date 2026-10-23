@@ -181,12 +181,6 @@
           },
           "description": "Local checks explicitly configured as an executable and argument array. No shell is used."
         },
-        "countersign.budgetGuardUsd": {
-          "type": "number",
-          "default": 1,
-          "minimum": 0.01,
-          "description": "Claude CLI estimated cost guard per print invocation; it does not guarantee a billing cap."
-        },
         "countersign.taskTimeoutMinutes": {
           "type": "number",
           "default": 30,
