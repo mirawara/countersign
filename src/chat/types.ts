@@ -1,6 +1,6 @@
 export type ChatProvider = "mock" | "claude" | "codex";
 export type ChatRole = "user" | "assistant" | "system";
-export type ChatStatus = "running" | "completed" | "failed" | "cancelled";
+export type ChatStatus = "running" | "completed" | "failed" | "cancelled" | "interrupted";
 
 export interface ChatUsage {
   inputTokens?: number;
@@ -40,25 +40,12 @@ export interface ChatThread {
   createdAt: string;
   updatedAt: string;
   messages: ChatMessage[];
-  sessions: { claude?: string; codex?: string };
-  sessionModels?: { claude?: string; codex?: string };
-  sessionAccounts?: { claude?: string; codex?: string };
-  repositoryDigest?: string;
 }
 
 export interface ChatState {
   version: 1;
   activeThreadId: string;
   threads: ChatThread[];
-  modes: ChatMode[];
-}
-
-export interface ChatMode {
-  id: string;
-  label: string;
-  protocol: "chat" | "balanced";
-  instruction?: string;
-  timeoutMinutes?: number;
 }
 
 /** An effort or reasoning level exactly as the provider's catalogue reports it. */

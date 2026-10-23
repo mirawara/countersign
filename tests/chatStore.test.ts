@@ -13,12 +13,11 @@ const message = (text: string): ChatMessage => ({ id: randomUUID(), role: "user"
   createdAt: new Date().toISOString() });
 
 describe("chat workspace history", () => {
-  it("persists threads, selection, rename and native session IDs across store recreation", async () => {
+  it("persists threads, selection, rename and message history across store recreation", async () => {
     const storage = new MemoryStorage();
     const first = new ChatStore(storage);
     const older = first.activeThread().id;
     await first.append(older, message("Original conversation"));
-    await first.setSession(older, "claude", "session-123", "Claude subscription login", "default");
     await first.append(older, { id: randomUUID(), role: "assistant", text: "Done", createdAt: new Date().toISOString(),
       provider: "claude", requestedModel: "default", model: "claude-sonnet-4-6", status: "completed" });
     const newer = await first.createThread();
@@ -28,12 +27,7 @@ describe("chat workspace history", () => {
 
     const restored = new ChatStore(storage);
     expect(restored.activeThread().id).toBe(older);
-    expect(restored.activeThread().sessions.claude).toBe("session-123");
-    expect(restored.activeThread().sessionModels?.claude).toBe("default");
     expect(restored.activeThread().messages.at(-1)).toMatchObject({ requestedModel: "default", model: "claude-sonnet-4-6" });
-    expect(restored.resumableSession(older, "claude", "Claude subscription login", "default")).toBe("session-123");
-    expect(restored.resumableSession(older, "claude", "Claude subscription login", "claude-sonnet-4-6")).toBeUndefined();
-    expect(restored.resumableSession(older, "claude", "Different login", "default")).toBeUndefined();
     expect(restored.snapshot().threads.find((thread) => thread.id === newer.id)?.title).toBe("Renamed task");
     await restored.deleteThread(older);
     expect(new ChatStore(storage).activeThread().id).toBe(newer.id);
@@ -54,19 +48,23 @@ describe("chat workspace history", () => {
     expect(store.snapshot().threads).toHaveLength(1);
     expect(store.activeThread().messages).toHaveLength(1);
     expect(store.activeThread().messages[0].text).toHaveLength(100_000);
-    expect(store.activeThread().sessions.claude).toBeUndefined();
+    expect(store.activeThread()).not.toHaveProperty("sessions");
   });
 
-  it("keeps custom mode definitions when chat history is cleared", async () => {
+  it("preserves conversation history while ignoring stored legacy chat modes", async () => {
     const storage = new MemoryStorage();
     const store = new ChatStore(storage);
-    const mode = await store.createMode("Focused review", "Report only verified findings.", 5);
     await store.append(store.activeThread().id, message("Review this file"));
-    await store.clear();
+    await storage.update("countersign.chat.v1", { ...store.snapshot(), modes: [
+      { id: "chat", label: "Chat (one provider)", protocol: "chat" },
+      { id: `custom-${randomUUID()}`, label: "Focused review", protocol: "chat",
+        instruction: "Report only verified findings.", timeoutMinutes: 5 },
+    ], threads: [{ ...store.activeThread(), sessions: { claude: "old-session" } }] });
     const restored = new ChatStore(storage);
-    expect(restored.snapshot().modes.find((entry) => entry.id === mode.id)?.timeoutMinutes).toBe(5);
+    expect(restored.snapshot()).not.toHaveProperty("modes");
+    expect(restored.activeThread()).not.toHaveProperty("sessions");
+    expect(restored.activeThread().messages[0].text).toBe("Review this file");
+    await restored.clear();
     expect(restored.activeThread().messages).toHaveLength(0);
-    await restored.deleteMode(mode.id);
-    expect(new ChatStore(storage).snapshot().modes.map((entry) => entry.id)).toEqual(["chat", "balanced"]);
   });
 });

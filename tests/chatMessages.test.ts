@@ -10,6 +10,7 @@ class Element {
   className = "";
   disabled = false;
   children: Element[] = [];
+  get options(): Element[] { return this.children; }
   scrollHeight = 0;
   scrollTop = 0;
   clientHeight = 0;
@@ -45,20 +46,21 @@ function run(messages: unknown[]): { get: (id: string) => Element } {
   let receive: ((event: { data: unknown }) => void) | undefined;
   const source = readFileSync(resolve(process.cwd(), "media/chat.js"), "utf8");
   new Script(source).runInNewContext({
+    setInterval: () => 0,
     acquireVsCodeApi: () => ({ postMessage: () => {} }),
     document: { getElementById: get, createElement: (tag: string) => new Element(tag) },
     window: { addEventListener: (_name: string, callback: (event: { data: unknown }) => void) => { receive = callback; } },
   });
   receive?.({ data: {
     type: "state",
-    state: { activeThreadId: "thread", threads: [{ id: "thread", title: "Test", messages }], modes: [{ id: "chat", label: "Chat", protocol: "chat" }] },
+    state: { activeThreadId: "thread", threads: [{ id: "thread", title: "Test", messages }] },
     capabilities: [{ provider: "claude", available: true, accountLabel: "Claude login", models: [{ value: "default", label: "Default", effortLevels: ["high"] }] }],
   } });
   return { get };
 }
 
 describe("chat message rendering", () => {
-  it("separates user and assistant rows and keeps the mock provider out of the selector", () => {
+  it("separates user and assistant rows", () => {
     const { get } = run([
       { id: "a", role: "user", text: "Explain this", createdAt: "2026-10-21T09:00:00.000Z" },
       { id: "b", role: "assistant", provider: "claude", text: "Answer", status: "completed", createdAt: "2026-10-21T09:00:05.000Z" },
@@ -67,7 +69,6 @@ describe("chat message rendering", () => {
     expect(rows.map((row) => row.className)).toEqual(["row user", "row assistant"]);
     expect(rows[0].find((node) => node.className === "who")?.textContent).toBe("You");
     expect(rows[1].find((node) => node.className === "who")?.textContent).toBe("Claude");
-    expect(get("provider").children.map((child) => child.value)).toEqual(["claude"]);
   });
 
   it("renders fenced code, inline code and lists as nodes instead of raw text", () => {

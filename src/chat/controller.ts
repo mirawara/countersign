@@ -1,20 +1,25 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { basename, isAbsolute, relative, resolve, sep } from "node:path";
+import { tmpdir } from "node:os";
 import * as vscode from "vscode";
 import { chatGateMatches, sdkVersion, verifyClaudeChatGate, VERIFIED_CLAUDE_CHAT_CLI, VERIFIED_CLAUDE_CHAT_SDK } from "./claudeChatGate";
 import { clearClaudeChatGate, loadClaudeChatGate, saveClaudeChatGate } from "./claudeChatGateStore";
-import { inspectClaude, runClaudeTurn } from "./claudeAdapter";
-import { inspectCodex, runCodexTurn } from "./codexAdapter";
+import { inspectClaude, inspectClaudeAccount } from "./claudeAdapter";
+import { inspectCodex, inspectCodexAccount } from "./codexAdapter";
 import { ChatStore } from "./store";
 import { ChatApproval, ChatCapability, ChatMessage, ChatProvider } from "./types";
 import { ChatView } from "./view";
-import { WorkflowEvent, WorkflowResult } from "../shared/types";
+import { AccountProfiles, AccountProvider } from "./accountProfiles";
+import { BalancedWorkflowResult, WorkflowEvent } from "../shared/types";
 import { detailedWorkflowReport } from "../orchestrator/report";
-import { acquireRepositoryLock, isRepositoryLocked, onRepositoryLockChange } from "../shared/repositoryLock";
-import { createWorkspaceChanges, WorkspaceChanges } from "../context/workspaceChanges";
+import { isRepositoryLocked, onRepositoryLockChange } from "../shared/repositoryLock";
 import { ExecutionPermission, WorkflowModelSelection, WorkflowProviderSelection } from "../configuration/config";
-import { WorkflowStartRequest } from "../shared/workflowInteraction";
+import {
+  StrictPlanApprovalAnswer, StrictPlanPromptData, StrictWorkflowStartRequest, WorkflowStartRequest,
+  WorkflowAccountSelection,
+} from "../shared/workflowInteraction";
+import { StrictWorkflowResult } from "../shared/strict";
 
 interface FileAttachment {
   path: string;
@@ -25,30 +30,63 @@ type Incoming = Record<string, unknown>;
 
 interface WorkflowPrompt {
   id: string;
-  kind: "plan" | "question";
+  kind: "plan" | "question" | "strictPlan" | "pause";
   title: string;
   detail: string;
+  /** The informational file estimate and permission control shown with a Strict plan. */
+  strict?: StrictPlanPromptData;
 }
 
+type WorkflowPromptAnswer = string | boolean | StrictPlanApprovalAnswer | "resume" | "stop" | undefined;
+
+interface TurnSettings {
+  mode: "balanced" | "strict";
+  executionPermission: ExecutionPermission;
+  selection: WorkflowModelSelection;
+}
+
+interface LiveTask {
+  label: string;
+  since: number;
+}
+
+const TURN_SETTINGS_KEY = "countersign.turnSettings.v1";
+
 export class ChatController implements vscode.Disposable {
+  private readonly sessionId = randomUUID();
   private readonly store: ChatStore;
+  private readonly accounts: AccountProfiles;
   private readonly view: ChatView;
   private readonly subscriptions: vscode.Disposable[] = [];
   private readonly capabilities = new Map<ChatProvider, ChatCapability>();
+  private readonly accountEmails = new Map<string, string | null>();
+  private turnSettings: TurnSettings;
+  private turnSettingsStored: boolean;
+  private settingsSave: Promise<void> = Promise.resolve();
+  private identitiesRefreshing = false;
+  private identitiesRefreshPending = false;
+  private liveTask: LiveTask | undefined;
   private activeController: AbortController | undefined;
+  private sending = false;
   private attachment: FileAttachment | undefined;
   private notice = "";
   private approval: ChatApproval | undefined;
   private answerApproval: ((accepted: boolean) => void) | undefined;
   private workflowPrompt: WorkflowPrompt | undefined;
-  private answerWorkflowPrompt: ((answer: string | boolean | undefined) => void) | undefined;
+  private answerWorkflowPrompt: ((answer: WorkflowPromptAnswer) => void) | undefined;
   private refreshing = false;
+  private refreshPending = false;
 
   constructor(private readonly context: vscode.ExtensionContext, private readonly workflow: {
-    start: (request: WorkflowStartRequest) => Promise<WorkflowResult | undefined>;
+    start: (request: WorkflowStartRequest) => Promise<BalancedWorkflowResult | undefined>;
+    startStrict?: (request: StrictWorkflowStartRequest) => Promise<StrictWorkflowResult>;
     cancel: () => void;
   }) {
     this.store = new ChatStore(context.workspaceState);
+    this.accounts = new AccountProfiles(context.globalState ?? context.workspaceState);
+    const storedTurnSettings = context.workspaceState.get<unknown>(TURN_SETTINGS_KEY);
+    this.turnSettingsStored = storedTurnSettings !== undefined;
+    this.turnSettings = restoreTurnSettings(storedTurnSettings);
     this.view = new ChatView(context.extensionUri, (message) => { void this.onMessage(message); }, () => this.postState());
     if (process.env.COUNTERSIGN_TEST_MODE === "1") {
       this.capabilities.set("mock", { provider: "mock", available: true, accountLabel: "Test provider",
@@ -62,7 +100,8 @@ export class ChatController implements vscode.Disposable {
 
   register(): void {
     this.subscriptions.push(
-      vscode.window.registerWebviewViewProvider(ChatView.viewType, this.view),
+      vscode.window.registerWebviewViewProvider(ChatView.viewType, this.view,
+        { webviewOptions: { retainContextWhenHidden: true } }),
       { dispose: onRepositoryLockChange(() => this.postState()) },
       vscode.commands.registerCommand("countersign.openChat", () => this.view.reveal()),
       vscode.commands.registerCommand("countersign.newChat", () => this.newThread()),
@@ -77,9 +116,7 @@ export class ChatController implements vscode.Disposable {
       }),
     );
     if (process.env.COUNTERSIGN_TEST_MODE === "1") {
-      this.subscriptions.push(vscode.commands.registerCommand("countersign.chatMockTurn", (text: string) => this.send({
-        type: "send", text, provider: "mock", model: "mock", effort: "", mode: "chat",
-      })));
+      this.subscriptions.push(vscode.commands.registerCommand("countersign.chatMockTurn", (text: string) => this.mockChatTranscript(text)));
     }
     this.context.subscriptions.push(...this.subscriptions);
   }
@@ -95,11 +132,44 @@ export class ChatController implements vscode.Disposable {
     if (!isRecord(raw) || typeof raw.type !== "string") return;
     try {
       switch (raw.type) {
-        case "refresh": await this.refreshCapabilities(); break;
-        case "discover": if (raw.provider === "claude" || raw.provider === "codex") await this.refreshCapabilities(); break;
+        case "refresh":
+          void this.refreshAccountIdentities();
+          await this.refreshCapabilities();
+          break;
+        case "turnSettings":
+          if (!this.activeController) await this.saveTurnSettings(raw.settings);
+          break;
+        case "selectAccount":
+          if (!this.activeController && !this.sending && accountProvider(raw.provider) && typeof raw.id === "string") {
+            await this.accounts.select(raw.provider, raw.id);
+            this.clearAccountCapability(raw.provider);
+            this.postState();
+            void this.refreshAccountIdentities();
+            await this.refreshCapabilities();
+          }
+          break;
+        case "addAccount":
+          if (!this.activeController && !this.sending && accountProvider(raw.provider)) await this.addAccount(raw.provider);
+          break;
+        case "loginAccount":
+          if (!this.activeController && !this.sending && accountProvider(raw.provider)) this.openLoginTerminal(raw.provider);
+          break;
+        case "removeAccount":
+          if (!this.activeController && !this.sending && accountProvider(raw.provider)) {
+            const selected = this.accounts.selected(raw.provider);
+            if (selected) {
+              await this.accounts.remove(raw.provider, selected.id);
+              this.clearAccountCapability(raw.provider);
+              this.notice = `Removed ${selected.label} from Countersign. CLI files were left in place.`;
+              this.postState();
+              void this.refreshAccountIdentities();
+              await this.refreshCapabilities();
+            }
+          }
+          break;
         case "newThread": await this.newThread(); break;
         case "selectThread":
-          if (typeof raw.id === "string" && !this.activeController) {
+          if (typeof raw.id === "string" && !this.activeController && !this.sending) {
             await this.store.selectThread(raw.id);
             this.postState();
           }
@@ -116,12 +186,11 @@ export class ChatController implements vscode.Disposable {
         case "openDiff":
           if (typeof raw.messageId === "string") await this.openDiff(raw.messageId);
           break;
-        case "addMode": await this.addMode(); break;
-        case "deleteMode":
-          if (typeof raw.id === "string") await this.deleteMode(raw.id);
-          break;
         case "addFile": await this.addActiveFile(); break;
-        case "cancel": this.activeController?.abort(); break;
+        case "cancel":
+          this.setLiveTask("Stopping task");
+          this.activeController?.abort();
+          break;
         case "approval":
           if (raw.id === this.approval?.id && ["accept", "decline", "cancel"].includes(String(raw.decision))) {
             if (raw.decision === "cancel") this.activeController?.abort();
@@ -138,10 +207,20 @@ export class ChatController implements vscode.Disposable {
             } else if (this.workflowPrompt?.kind === "question" && raw.decision === "answer" &&
               typeof raw.answer === "string" && raw.answer.trim().length > 0 && raw.answer.length <= 20_000) {
               this.answerWorkflowPrompt?.(raw.answer.trim());
+            } else if (this.workflowPrompt?.kind === "pause" && (raw.decision === "resume" || raw.decision === "stop")) {
+              this.answerWorkflowPrompt?.(raw.decision);
+            } else if (this.workflowPrompt?.kind === "strictPlan") {
+              this.answerWorkflowPrompt?.(strictApprovalFrom(raw, this.workflowPrompt.strict));
             }
           }
           break;
-        case "send": await this.send(raw); break;
+        case "send":
+          if (this.sending) break;
+          this.sending = true;
+          this.postState();
+          try { await this.send(raw); }
+          finally { this.sending = false; this.postState(); }
+          break;
       }
     } catch (error) {
       this.notice = error instanceof Error ? error.message.slice(0, 300) : "Chat action failed.";
@@ -150,7 +229,7 @@ export class ChatController implements vscode.Disposable {
   }
 
   private async newThread(): Promise<void> {
-    if (this.activeController) return;
+    if (this.activeController || this.sending) return;
     await this.store.createThread();
     this.attachment = undefined;
     this.notice = "";
@@ -158,7 +237,7 @@ export class ChatController implements vscode.Disposable {
   }
 
   private async deleteThread(id: string): Promise<void> {
-    if (this.activeController) return;
+    if (this.activeController || this.sending) return;
     const thread = this.store.snapshot().threads.find((entry) => entry.id === id);
     if (!thread) return;
     const choice = await vscode.window.showWarningMessage(`Delete conversation “${thread.title}”?`,
@@ -170,9 +249,9 @@ export class ChatController implements vscode.Disposable {
   }
 
   private async clearHistory(): Promise<void> {
-    if (this.activeController) return;
+    if (this.activeController || this.sending) return;
     const choice = await vscode.window.showWarningMessage("Delete all Countersign chat history in this workspace?",
-      { modal: true, detail: "Messages and saved diffs are removed. Custom modes and native provider sessions remain." }, "Delete all");
+      { modal: true, detail: "Messages and saved diffs are removed. Native provider sessions remain." }, "Delete all");
     if (choice !== "Delete all") return;
     for (const thread of this.store.snapshot().threads) await this.deleteArtifacts(thread.messages);
     await this.store.clear();
@@ -181,8 +260,65 @@ export class ChatController implements vscode.Disposable {
     this.postState();
   }
 
+  private async addAccount(provider: AccountProvider): Promise<void> {
+    const action = await vscode.window.showQuickPick([
+      { label: "Use an existing CLI profile", value: "existing" as const,
+        description: "Choose a directory already authenticated by the provider CLI" },
+      { label: "Sign in to a new CLI profile", value: "new" as const,
+        description: "Create a separate local directory and open the provider login" },
+    ], { title: `Add ${provider === "claude" ? "Claude" : "Codex"} account` });
+    if (!action) return;
+    let directory: string | undefined;
+    if (action.value === "existing") {
+      const picked = await vscode.window.showOpenDialog({ title: "Choose the CLI profile directory",
+        canSelectFolders: true, canSelectFiles: false, canSelectMany: false });
+      directory = picked?.[0]?.fsPath;
+      if (!directory) return;
+    }
+    const label = await vscode.window.showInputBox({ title: "Account label in Countersign",
+      value: directory ? basename(directory) : provider === "claude" ? "Claude account" : "Codex account",
+      validateInput: (value) => value.trim() ? undefined : "Enter a label." });
+    if (label === undefined) return;
+    const profile = directory
+      ? await this.accounts.addExisting(provider, label, directory)
+      : await this.accounts.create(provider, label);
+    this.clearAccountCapability(provider);
+    this.notice = `${profile.label} selected. ${directory ? "Press Refresh to check its CLI login." : "Complete login in the terminal, then press Refresh."}`;
+    this.postState();
+    if (!directory) this.openLoginTerminal(provider, profile);
+    else {
+      void this.refreshAccountIdentities();
+      await this.refreshCapabilities();
+    }
+  }
+
+  private openLoginTerminal(provider: AccountProvider, profile = this.accounts.selected(provider)): void {
+    this.clearAccountCapability(provider);
+    const config = vscode.workspace.getConfiguration("countersign");
+    const executable = config.get<string>(provider === "claude" ? "claudeExecutable" : "codexExecutable") || provider;
+    const env: Record<string, string | null> = {
+      ANTHROPIC_API_KEY: null, ANTHROPIC_AUTH_TOKEN: null, OPENAI_API_KEY: null, CODEX_API_KEY: null,
+    };
+    if (profile) env[provider === "claude" ? "CLAUDE_CONFIG_DIR" : "CODEX_HOME"] = profile.directory;
+    const terminal = vscode.window.createTerminal({
+      name: `${provider === "claude" ? "Claude" : "Codex"} login · ${profile?.label ?? "CLI default"}`,
+      cwd: tmpdir(), env,
+    });
+    const args = provider === "claude" ? ["auth", "login"]
+      : profile ? ["login", "--config", 'cli_auth_credentials_store="file"'] : ["login"];
+    terminal.show();
+    terminal.sendText([executable, ...args].map(shellQuote).join(" "));
+    this.notice = "Finish the provider CLI login in the terminal, then press Refresh in Turn settings.";
+    this.postState();
+  }
+
+  private clearAccountCapability(provider: AccountProvider): void {
+    this.capabilities.set(provider, { provider, available: false,
+      accountLabel: "Checking selected CLI login", models: [], reason: "Press Refresh to check this CLI login." });
+  }
+
   private async renameThread(id: string): Promise<void> {
-    if (this.activeController) return;
+    if (this.activeController || this.sending) return;
     const thread = this.store.snapshot().threads.find((entry) => entry.id === id);
     if (!thread) return;
     const title = await vscode.window.showInputBox({ title: "Rename conversation", value: thread.title,
@@ -218,34 +354,6 @@ export class ChatController implements vscode.Disposable {
     if (!storage || !message?.diffArtifact) return;
     const document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(storage, message.diffArtifact));
     await vscode.window.showTextDocument(document, { preview: true });
-  }
-
-  private async addMode(): Promise<void> {
-    if (this.activeController) return;
-    const label = await vscode.window.showInputBox({ title: "New chat mode", prompt: "Name this mode",
-      validateInput: (value) => value.trim() ? undefined : "Enter a name." });
-    if (!label) return;
-    const instruction = await vscode.window.showInputBox({ title: `Instruction for ${label}`,
-      prompt: "Describe how this mode should respond (chat protocol; no automatic checks)",
-      validateInput: (value) => value.trim() ? undefined : "Enter an instruction." });
-    if (!instruction) return;
-    const minutes = await vscode.window.showInputBox({ title: "Maximum time per turn", value: "10",
-      validateInput: (value) => /^[1-9]\d?$/.test(value) && Number(value) <= 60 ? undefined : "Enter 1 to 60 minutes." });
-    if (!minutes) return;
-    const created = await this.store.createMode(label, instruction, Number(minutes));
-    this.notice = `Mode “${created.label}” added for this workspace.`;
-    this.postState();
-  }
-
-  private async deleteMode(id: string): Promise<void> {
-    if (this.activeController || !id.startsWith("custom-")) return;
-    const mode = this.store.snapshot().modes.find((entry) => entry.id === id);
-    if (!mode) return;
-    const choice = await vscode.window.showWarningMessage(`Delete mode “${mode.label}”? Existing messages keep their mode label.`,
-      { modal: true }, "Delete mode");
-    if (choice !== "Delete mode") return;
-    await this.store.deleteMode(id);
-    this.postState();
   }
 
   private async deleteArtifacts(messages: ChatMessage[]): Promise<void> {
@@ -295,35 +403,28 @@ export class ChatController implements vscode.Disposable {
 
   private async send(raw: Incoming): Promise<void> {
     if (this.activeController) return;
+    if (isRecord(raw.accounts)) {
+      for (const provider of ["claude", "codex"] as const) {
+        const id = raw.accounts[provider];
+        if (typeof id !== "string") throw new Error(`Choose a ${provider} account profile.`);
+        await this.accounts.select(provider, id);
+      }
+    }
     const text = typeof raw.text === "string" ? raw.text.trim() : "";
-    const provider = raw.provider;
-    const model = raw.model;
-    const effort = raw.effort;
-    const mode = raw.mode;
-    const modeDefinition = this.store.snapshot().modes.find((entry) => entry.id === mode);
-    if (!text || text.length > 20_000 || !isProvider(provider) || typeof model !== "string" ||
-        typeof effort !== "string" || !modeDefinition) {
-      this.notice = "Enter a message and choose a supported provider, model and mode.";
+    if (!text || text.length > 100_000) {
+      this.notice = "Enter a task of up to 100,000 characters.";
       this.postState();
       return;
     }
     let selection: WorkflowModelSelection | undefined;
-    let providers: WorkflowProviderSelection | undefined;
+    const providers: WorkflowProviderSelection = { provider: "claude", codexProvider: "real" };
     const executionPermission = raw.executionPermission;
-    if (provider !== "mock" && executionPermission !== "askBeforeChange" && executionPermission !== "fullAccess") {
+    if (executionPermission !== "askBeforeChange" && executionPermission !== "fullAccess") {
       this.notice = "Choose Ask before change or Full access.";
       this.postState();
       return;
     }
-    if (modeDefinition.protocol === "balanced") {
-      if (raw.agents !== undefined && raw.agents !== "real") {
-        this.notice = "Balanced runs the real Claude and Codex agents.";
-        this.postState();
-        return;
-      }
-      providers = { provider: "claude", codexProvider: "real" };
-    }
-    if (modeDefinition.protocol === "balanced" && raw.selection !== undefined) {
+    if (raw.selection !== undefined) {
       if (!isRecord(raw.selection) || !["claudeModel", "claudeEffort", "codexModel", "codexEffort"]
         .every((key) => typeof raw.selection === "object" &&
           typeof (raw.selection as Record<string, unknown>)[key] === "string" &&
@@ -334,46 +435,39 @@ export class ChatController implements vscode.Disposable {
       }
       selection = raw.selection as WorkflowModelSelection;
     }
-    const capability = this.capabilities.get(provider);
-    const selected = capability?.models.find((entry) => entry.value === model);
-    if (modeDefinition.protocol === "chat" && (!capability?.available || !selected || (effort && !selected.effortLevels.includes(effort)))) {
-      this.notice = capability?.reason || "The selected model or effort is unavailable. Refresh providers.";
+    const mode = raw.mode === "strict" ? "strict" : raw.mode === "balanced" ? "balanced" : this.turnSettings.mode;
+    if (mode === "strict" && !this.workflow.startStrict) {
+      this.notice = "Strict is not available in this window.";
       this.postState();
       return;
     }
-    if ((provider !== "mock" || modeDefinition.protocol === "balanced") && (!vscode.workspace.isTrusted || process.platform !== "linux" ||
-        vscode.workspace.workspaceFolders?.length !== 1)) {
-      this.notice = "Real chat requires one trusted workspace on verified Linux.";
+    if (!vscode.workspace.isTrusted || process.platform !== "linux" ||
+        vscode.workspace.workspaceFolders?.length !== 1) {
+      this.notice = `${mode === "strict" ? "Strict" : "Balanced"} requires one trusted workspace on verified Linux.`;
       this.postState();
       return;
     }
-    let releaseLock: (() => void) | undefined;
-    if (modeDefinition.protocol === "chat" && provider !== "mock") {
-      try { releaseLock = acquireRepositoryLock(vscode.workspace.workspaceFolders![0].uri.fsPath); }
-      catch (error) {
-        this.notice = error instanceof Error ? error.message : "Repository is busy.";
-        this.postState();
-        return;
-      }
-    }
+    await this.saveTurnSettings({ mode, executionPermission, selection: selection ?? this.turnSettings.selection });
     const controller = new AbortController();
     this.activeController = controller;
-    const turnTimer = modeDefinition.protocol === "chat" ? setTimeout(() => controller.abort(),
-      (modeDefinition.timeoutMinutes ?? 10) * 60_000) : undefined;
+    this.liveTask = { label: `Starting ${mode === "strict" ? "Strict" : "Balanced"} task`, since: Date.now() };
     const threadId = this.store.activeThread().id;
     const incomingAttachment = isRecord(raw.attachment) && raw.attachment.path === this.attachment?.path
       ? this.attachment : undefined;
     this.attachment = undefined;
+    const task = incomingAttachment
+      ? `${text}\n\nReferenced workspace file: ${incomingAttachment.path}${incomingAttachment.selection
+        ? `\nSelected text:\n${incomingAttachment.selection}` : ""}`
+      : text;
+    const modeLabel = mode === "strict" ? "Strict" : "Balanced";
+    const accounts = this.accounts.selection();
+    const accountLabel = `Claude: ${accounts.claudeLabel}; Codex: ${accounts.codexLabel}`;
     const user: ChatMessage = { id: randomUUID(), role: "user", text, createdAt: new Date().toISOString(),
-      ...(modeDefinition.protocol === "chat" ? { provider, accountLabel: capability?.accountLabel,
-        model, requestedModel: model, requestedEffort: effort || undefined } : {}),
-      modeLabel: modeDefinition.label,
+      modeLabel, accountLabel,
       fileRefs: incomingAttachment ? [incomingAttachment.path] : [] };
     const replyId = randomUUID();
     const reply: ChatMessage = { id: replyId, role: "assistant", text: "", createdAt: new Date().toISOString(),
-      ...(modeDefinition.protocol === "chat" ? { provider, accountLabel: capability?.accountLabel,
-        model, requestedModel: model, requestedEffort: effort || undefined } : {}),
-      modeLabel: modeDefinition.label,
+      modeLabel, accountLabel,
       status: "running", activity: [] };
     try {
       const evictedUser = await this.store.append(threadId, user);
@@ -382,11 +476,11 @@ export class ChatController implements vscode.Disposable {
       this.notice = "";
       this.view.post({ type: "sent" });
       this.postState();
-      if (modeDefinition.protocol === "balanced") await this.runBalanced(threadId, replyId, text, providers!, selection,
-        executionPermission as ExecutionPermission, controller.signal);
-      else if (provider === "mock") await this.runMock(threadId, replyId, text, controller.signal);
-      else await this.runReal(provider, threadId, replyId, text, model, effort, incomingAttachment,
-        modeDefinition.instruction, executionPermission as ExecutionPermission, controller.signal);
+      if (mode === "strict") {
+        await this.runStrict(threadId, replyId, task, selection, accounts, executionPermission, controller.signal);
+      } else {
+        await this.runBalanced(threadId, replyId, task, providers, selection, accounts, executionPermission, controller.signal);
+      }
       await this.store.updateMessage(threadId, replyId, { status: controller.signal.aborted ? "cancelled" : "completed" });
     } catch (error) {
       const previousActivity = this.store.activeThread().messages.find((entry) => entry.id === replyId)?.activity ?? [];
@@ -399,17 +493,18 @@ export class ChatController implements vscode.Disposable {
         activity: [...previousActivity, controller.signal.aborted ? "Turn cancelled." : error instanceof Error
           ? error.message.slice(0, 300) : "Turn failed."] });
     } finally {
-      if (turnTimer) clearTimeout(turnTimer);
-      releaseLock?.();
       this.answerApproval?.(false);
       this.answerWorkflowPrompt?.(undefined);
       if (this.activeController === controller) this.activeController = undefined;
+      this.liveTask = undefined;
       this.postState();
+      void this.refreshCapabilities();
     }
   }
 
   private async runBalanced(threadId: string, replyId: string, task: string,
     providers: WorkflowProviderSelection, selection: WorkflowModelSelection | undefined,
+    accounts: WorkflowAccountSelection,
     executionPermission: ExecutionPermission, signal: AbortSignal): Promise<void> {
     const activity: string[] = [];
     const onAbort = (): void => this.workflow.cancel();
@@ -419,6 +514,7 @@ export class ChatController implements vscode.Disposable {
         task,
         providers,
         selection,
+        accounts,
         executionPermission,
         interaction: {
           askQuestion: (phase: "planning" | "implementing" | "reviewing" | "correcting", question: string,
@@ -429,18 +525,22 @@ export class ChatController implements vscode.Disposable {
             this.askPermission("claude", "tool", tool, detail, requestSignal),
         },
         onEvent: (event: WorkflowEvent) => {
+          this.setLiveTask(`Balanced · ${event.state.replace(/_/g, " ")}`);
           activity.push(`${event.state}: ${event.message}`.slice(0, 300));
           void this.store.updateMessage(threadId, replyId, { activity: activity.slice(-100) }).then(() => this.postState());
         },
       });
       if (!result) throw new Error("Balanced workflow did not start or was declined.");
+      this.setLiveTask("Preparing Balanced report");
       await this.store.updateMessage(threadId, replyId, {
         text: `Workflow finished: ${result.state}. The detailed report is below.`,
         provider: result.implementationProvider,
       });
-      const report: ChatMessage = { id: randomUUID(), role: "assistant", text: detailedWorkflowReport(result),
+      const report: ChatMessage = { id: randomUUID(), role: "assistant",
+        text: `Selected CLI profiles: Claude ${accounts.claudeLabel}; Codex ${accounts.codexLabel}.\n\n${detailedWorkflowReport(result)}`,
         createdAt: new Date().toISOString(), provider: result.implementationProvider,
-        modeLabel: "Balanced report", status: "completed", fileRefs: result.workingTreeEntries.slice(0, 20) };
+        modeLabel: "Balanced report", accountLabel: `Claude: ${accounts.claudeLabel}; Codex: ${accounts.codexLabel}`,
+        status: "completed", fileRefs: result.workingTreeEntries.slice(0, 20) };
       const diff = result.diff ?? result.simulatedDiff;
       if (diff) {
         try { report.diffArtifact = await this.saveDiffArtifact(diff); }
@@ -454,16 +554,129 @@ export class ChatController implements vscode.Disposable {
     } finally { signal.removeEventListener("abort", onAbort); }
   }
 
+  /**
+   * One Strict task driven from the sidebar. The plan, the consensus, the questions, the
+   * limits and pauses are all visible in the chat; nothing resumes after a restart.
+   */
+  private async runStrict(threadId: string, replyId: string, task: string,
+    selection: WorkflowModelSelection | undefined, accounts: WorkflowAccountSelection,
+    executionPermission: ExecutionPermission,
+    signal: AbortSignal): Promise<void> {
+    const startStrict = this.workflow.startStrict;
+    if (!startStrict) throw new Error("Strict is not available in this window.");
+    const activity: string[] = [];
+    const onAbort = (): void => this.workflow.cancel();
+    signal.addEventListener("abort", onAbort, { once: true });
+    try {
+      const result = await startStrict({
+        task,
+        selection,
+        accounts,
+        executionPermission,
+        signal,
+        onEvent: (event) => {
+          this.setLiveTask(`Strict phase ${event.phase === "plan" ? "A" : "B"} · ${event.state.replace(/_/g, " ")}`);
+          activity.push(`${event.state} (phase ${event.phase === "plan" ? "A" : "B"}): ${event.message}`.slice(0, 300));
+          void this.store.updateMessage(threadId, replyId, { activity: activity.slice(-100) }).then(() => this.postState());
+        },
+        interaction: {
+          askQuestion: (question, requestSignal) =>
+            this.askWorkflowQuestion(threadId, "planning", question, requestSignal, "Strict"),
+          approvePlan: (data, requestSignal) => this.approveStrictPlan(threadId, data, requestSignal),
+          onPause: (detail, requestSignal) => this.handleStrictPause(threadId, detail, requestSignal),
+          askPermission: (tool, detail, requestSignal) =>
+            this.askPermission("claude", "tool", tool, detail, requestSignal),
+        },
+      });
+      const providerRequests = result.budget.plan.providerRequests + result.budget.implementation.providerRequests;
+      const stoppedBeforeAgents = result.state !== "completed_clean" && providerRequests === 0 &&
+        result.sessions.length === 0;
+      if (!stoppedBeforeAgents) this.setLiveTask("Preparing Strict report");
+      await this.store.updateMessage(threadId, replyId, {
+        text: stoppedBeforeAgents
+          ? `Strict could not start: ${result.reason?.message ?? result.message}\n\n${result.reason?.nextAction ?? "Check the workspace and try again."}\n\nNo provider was contacted. Strict changed no workspace files.`
+          : `Strict task finished: ${result.state}. ${result.reason ? result.reason.message : result.message}`,
+        provider: "claude",
+      });
+      if (!stoppedBeforeAgents) await this.appendWorkflowMessage(threadId, {
+        id: randomUUID(), role: "assistant",
+        text: `Selected CLI profiles: Claude ${accounts.claudeLabel}; Codex ${accounts.codexLabel}.\n\n${detailedWorkflowReport(result)}`,
+        createdAt: new Date().toISOString(), provider: "claude", modeLabel: "Strict report",
+        accountLabel: `Claude: ${accounts.claudeLabel}; Codex: ${accounts.codexLabel}`, status: "completed",
+        fileRefs: result.snapshots.at(-1)?.entries.slice(0, 20).map((entry) => entry.path) ?? [],
+      });
+      this.postState();
+      if (result.state !== "completed_clean") {
+        throw new Error(`Strict task ended: ${result.state}. ${result.reason?.nextAction ?? ""}`.trim());
+      }
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+    }
+  }
+
+  private async approveStrictPlan(threadId: string, data: StrictPlanPromptData,
+    signal: AbortSignal): Promise<StrictPlanApprovalAnswer | undefined> {
+    await this.appendWorkflowMessage(threadId, {
+      id: randomUUID(), role: "assistant", provider: "claude", modeLabel: "Strict plan",
+      createdAt: new Date().toISOString(),
+      text: [
+        `Claude and Codex approved this plan. Hash ${data.planHash}.`,
+        data.planText,
+        // The estimate is information. Nothing is blocked on it: the scan and diff
+        // ceilings are the only limits on how wide a change may be.
+        data.expectedFilesComplete
+          ? `The plan expects ${data.expectedFileCount} file(s).`
+          : "The plan cannot estimate how many files it will touch.",
+        "Nothing is implemented until you approve this exact hash.",
+      ].filter(Boolean).join("\n\n"),
+    });
+    const answer = await this.waitForWorkflowPrompt({
+      id: randomUUID(), kind: "strictPlan",
+      title: "Approve the Strict plan",
+      detail: "Approve this exact plan hash, or refuse without changing any file.",
+      strict: data,
+    }, signal);
+    if (!answer || typeof answer !== "object") return undefined;
+    const decision = answer as StrictPlanApprovalAnswer;
+    await this.appendWorkflowMessage(threadId, {
+      id: randomUUID(), role: "user", createdAt: new Date().toISOString(), modeLabel: "Strict approval",
+      text: decision.approved
+        ? `Plan ${data.planHash.slice(0, 12)}… approved with ${decision.executionPermission === "fullAccess" ? "Full access" : "Ask before change"}.`
+        : "Plan refused. No file was changed.",
+    });
+    this.postState();
+    return decision;
+  }
+
+  private async handleStrictPause(threadId: string, detail: string, signal: AbortSignal): Promise<"resume" | "stop"> {
+    await this.appendWorkflowMessage(threadId, {
+      id: randomUUID(), role: "assistant", provider: "claude", modeLabel: "Strict pause",
+      createdAt: new Date().toISOString(),
+      text: `${detail}\n\nThe pause lives only in this window. If VS Code restarts, the task is gone and you start a new one against a new baseline.`,
+    });
+    const answer = await this.waitForWorkflowPrompt({
+      id: randomUUID(), kind: "pause", title: "Strict task paused",
+      detail: "Resume in this window, or stop the task and read the report.",
+    }, signal);
+    const choice = answer === "resume" ? "resume" : "stop";
+    await this.appendWorkflowMessage(threadId, {
+      id: randomUUID(), role: "user", createdAt: new Date().toISOString(), modeLabel: "Strict pause",
+      text: choice === "resume" ? "Resume the task." : "Stop the task.",
+    });
+    this.postState();
+    return choice;
+  }
+
   private async askWorkflowQuestion(threadId: string, phase: string, question: string,
-    signal: AbortSignal): Promise<string | undefined> {
+    signal: AbortSignal, mode: "Balanced" | "Strict" = "Balanced"): Promise<string | undefined> {
     await this.appendWorkflowMessage(threadId, { id: randomUUID(), role: "assistant",
       text: `Question during ${phase}:\n\n${question}`, createdAt: new Date().toISOString(),
-      provider: phase === "reviewing" ? "codex" : "claude", modeLabel: "Balanced" });
+      provider: phase === "reviewing" ? "codex" : "claude", modeLabel: mode });
     const answer = await this.waitForWorkflowPrompt({ id: randomUUID(), kind: "question",
       title: `Question during ${phase}`, detail: question }, signal);
     if (typeof answer !== "string") return undefined;
     await this.appendWorkflowMessage(threadId, { id: randomUUID(), role: "user", text: answer,
-      createdAt: new Date().toISOString(), modeLabel: "Balanced answer" });
+      createdAt: new Date().toISOString(), modeLabel: `${mode} answer` });
     this.postState();
     return answer;
   }
@@ -483,26 +696,11 @@ export class ChatController implements vscode.Disposable {
     return answer === true;
   }
 
-  private async confirmChatPlan(threadId: string, provider: "claude" | "codex", plan: string,
-    details: string, signal: AbortSignal): Promise<boolean> {
-    await this.appendWorkflowMessage(threadId, { id: randomUUID(), role: "assistant",
-      text: `Proposed plan\n\n${plan}\n\n${details}`,
-      createdAt: new Date().toISOString(), provider, modeLabel: "Chat plan" });
-    const answer = await this.waitForWorkflowPrompt({ id: randomUUID(), kind: "plan",
-      title: "Review the plan in this chat", detail: "Approve to start execution, or cancel without executing the plan." }, signal);
-    if (answer === true) {
-      await this.appendWorkflowMessage(threadId, { id: randomUUID(), role: "user", text: "Plan approved. Start execution.",
-        createdAt: new Date().toISOString(), modeLabel: "Chat approval" });
-    }
-    this.postState();
-    return answer === true;
-  }
-
-  private waitForWorkflowPrompt(prompt: WorkflowPrompt, signal: AbortSignal): Promise<string | boolean | undefined> {
+  private waitForWorkflowPrompt(prompt: WorkflowPrompt, signal: AbortSignal): Promise<WorkflowPromptAnswer> {
     if (signal.aborted || this.activeController?.signal.aborted || this.workflowPrompt) return Promise.resolve(undefined);
     return new Promise((resolve) => {
       const onAbort = (): void => finish(undefined);
-      const finish = (answer: string | boolean | undefined): void => {
+      const finish = (answer: WorkflowPromptAnswer): void => {
         signal.removeEventListener("abort", onAbort);
         this.activeController?.signal.removeEventListener("abort", onAbort);
         if (this.workflowPrompt?.id === prompt.id) {
@@ -510,10 +708,14 @@ export class ChatController implements vscode.Disposable {
           this.answerWorkflowPrompt = undefined;
           this.postState();
         }
+        this.setLiveTask(answer === undefined ? "Stopping task" : "Resuming task");
         resolve(answer);
       };
       this.workflowPrompt = prompt;
       this.answerWorkflowPrompt = finish;
+      this.setLiveTask(prompt.kind === "question" ? "Waiting for your answer"
+        : prompt.kind === "pause" ? "Strict task paused"
+          : "Waiting for plan approval");
       signal.addEventListener("abort", onAbort, { once: true });
       this.activeController?.signal.addEventListener("abort", onAbort, { once: true });
       this.view.reveal();
@@ -535,121 +737,6 @@ export class ChatController implements vscode.Disposable {
     if (evicted) await this.deleteArtifacts([evicted]);
   }
 
-  private async runReal(provider: "claude" | "codex", threadId: string, replyId: string, text: string,
-    model: string, effort: string, attachment: FileAttachment | undefined, instruction: string | undefined,
-    executionPermission: ExecutionPermission, signal: AbortSignal): Promise<void> {
-    const folder = vscode.workspace.workspaceFolders?.[0];
-    if (!folder || !vscode.workspace.isTrusted) throw new Error("Workspace trust is required.");
-    const cwd = folder.uri.fsPath;
-    const threadBefore = this.store.snapshot().threads.find((entry) => entry.id === threadId);
-    const tracker = await createWorkspaceChanges(cwd);
-    const startingChanges = await tracker.read();
-    if (tracker.source === "git" && threadBefore?.repositoryDigest) {
-      const current = startingChanges;
-      const digest = createHash("sha256").update(current.diff).digest("hex");
-      if (digest !== threadBefore.repositoryDigest) {
-        throw new Error("Repository changed outside this chat turn. Inspect the diff before starting another real turn.");
-      }
-    }
-    const config = vscode.workspace.getConfiguration("countersign");
-    const executable = config.get<string>(provider === "claude" ? "claudeExecutable" : "codexExecutable") || provider;
-    if (signal.aborted) throw new Error("Turn cancelled.");
-    const info = provider === "claude" ? await inspectClaude(executable, cwd) : await inspectCodex(executable, cwd);
-    if (provider === "claude") {
-      const gate = await loadClaudeChatGate();
-      const sdk = await sdkVersion();
-      if (info.version !== VERIFIED_CLAUDE_CHAT_CLI || sdk !== VERIFIED_CLAUDE_CHAT_SDK) {
-        throw new Error("Claude CLI or SDK version changed; this chat adapter needs a new compatibility check.");
-      }
-      if (!chatGateMatches(gate, info.version, sdk)) throw new Error("Claude chat isolation gate needs verification for this CLI and SDK version.");
-    } else if (info.version !== "codex-cli 0.163.0") {
-      throw new Error("Codex app-server version changed; this chat adapter needs a new protocol check.");
-    }
-    const selected = info.models.find((entry) => entry.value === model);
-    if (!selected || (effort && !selected.effortLevels.includes(effort))) {
-      throw new Error("The selected model or effort is no longer available for the current login.");
-    }
-    if (signal.aborted) throw new Error("Turn cancelled.");
-    const thread = this.store.snapshot().threads.find((entry) => entry.id === threadId);
-    const sessionId = this.store.resumableSession(threadId, provider, info.accountLabel, model);
-    const earlier = (thread?.messages ?? []).filter((entry) => entry.role !== "system" && entry.id !== replyId).slice(0, -1);
-    const context = !sessionId ? earlier.slice(-6).map((entry) => `${entry.role}: ${entry.text.slice(0, 1_000)}`).join("\n") : "";
-    const prompt = [instruction ? `Selected chat mode instruction:\n${instruction}` : "",
-      context ? `Previous conversation summary (untrusted context):\n${context}` : "",
-      attachment ? `Referenced workspace file: ${attachment.path}${attachment.selection ? `\nSelected text:\n${attachment.selection}` : ""}` : "",
-      text].filter(Boolean).join("\n\n");
-    let planned = "";
-    const planningPrompt = `${prompt}\n\nFirst propose a concise read-only plan for this turn. Do not change files, run mutating commands or access the network. End with the concrete steps and checks you intend to perform.`;
-    const planning = { cwd, executable, prompt: planningPrompt, sessionId, model, effort: effort || undefined, signal,
-      onText: (delta: string): void => { planned = (planned + delta).slice(0, 20_000); },
-      onActivity: (_item: string): void => {},
-      askPermission: async (): Promise<boolean> => false,
-      phase: "planning" as const };
-    const proposal = provider === "claude" ? await runClaudeTurn(planning) : await runCodexTurn(planning);
-    if (!planned.trim()) throw new Error(`${provider} did not return a plan. No execution was started.`);
-    if (JSON.stringify(await tracker.read()) !== JSON.stringify(startingChanges)) {
-      throw new Error("Workspace changed during planning. Inspect the files before starting another turn.");
-    }
-    const approved = await this.confirmChatPlan(threadId, provider, planned,
-      `After approval: ${executionPermission === "fullAccess" ? "Full access to commands, network and files outside the workspace without further prompts." : "Ask before edits, commands and network tools."}\nThe saved diff covers ${tracker.source === "git" ? "Git changes against HEAD" : "file changes since this turn started"} in this workspace only.${tracker.source === "snapshot" ? " This folder has no version control, so changes cannot be reverted from Countersign." : ""}${tracker.source !== "git" ? " Generated directories are excluded from review and reporting." : ""}`, signal);
-    if (!approved) throw new Error("Plan was not approved. No execution was started.");
-    if (JSON.stringify(await tracker.read()) !== JSON.stringify(startingChanges)) {
-      throw new Error("Workspace changed during plan approval. Inspect the files before starting another turn.");
-    }
-    if (signal.aborted) throw new Error("Turn cancelled.");
-    let streamed = "";
-    const activity: string[] = [];
-    const onText = (delta: string): void => {
-      streamed = (streamed + delta).slice(0, 100_000);
-      void this.store.updateMessage(threadId, replyId, { text: streamed }).then(() => this.postState());
-    };
-    const onActivity = (item: string): void => {
-      activity.push(item.slice(0, 300));
-      void this.store.updateMessage(threadId, replyId, { activity: activity.slice(-100) }).then(() => this.postState());
-    };
-    if (provider === "claude") {
-      const result = await runClaudeTurn({ cwd, executable,
-        prompt: `Approved plan:\n${planned}\n\nExecute the user's request according to this plan. Report actions outside the workspace separately; the saved diff only covers the workspace.`,
-        sessionId: proposal.sessionId, model, effort: effort || undefined, signal, executionPermission,
-        onText, onActivity,
-        onQuota: (quota) => {
-          const capability = this.capabilities.get("claude");
-          if (capability) capability.quotaLabel = `${quota.status}${quota.type ? ` (${quota.type})` : ""}`;
-          void this.store.updateMessage(threadId, replyId, { quota }).then(() => this.postState());
-        },
-        askPermission: (tool, detail, requestSignal) => this.askPermission(provider, "tool", tool, detail, requestSignal),
-      });
-      await this.store.setSession(threadId, provider, result.sessionId, info.accountLabel, model);
-      await this.store.updateMessage(threadId, replyId, { model: result.model || model,
-        effectiveEffort: result.effectiveEffort, usage: result.usage, quota: result.quota,
-        accountLabel: info.accountLabel });
-      await this.captureDiff(tracker, threadId, replyId);
-    } else {
-      const result = await runCodexTurn({ cwd, executable,
-        prompt: `Approved plan:\n${planned}\n\nExecute the user's request according to this plan. Report actions outside the workspace separately; the saved diff only covers the workspace.`,
-        sessionId: proposal.sessionId, model, effort: effort || undefined, signal, executionPermission,
-        onText, onActivity,
-        askPermission: (kind, detail, requestSignal) => this.askPermission(provider, kind, kind, detail, requestSignal),
-      });
-      await this.store.setSession(threadId, provider, result.sessionId, info.accountLabel, model);
-      await this.store.updateMessage(threadId, replyId, { accountLabel: info.accountLabel });
-      await this.captureDiff(tracker, threadId, replyId);
-    }
-  }
-
-  private async captureDiff(tracker: WorkspaceChanges, threadId: string, replyId: string): Promise<void> {
-    const changes = await tracker.read();
-    const digest = createHash("sha256").update(changes.diff).digest("hex");
-    if (!changes.diff) { if (tracker.source === "git") await this.store.setRepositoryDigest(threadId, digest); return; }
-    const storage = this.context.storageUri;
-    if (!storage) throw new Error("Chat artifact storage is unavailable.");
-    await vscode.workspace.fs.createDirectory(storage);
-    const name = `${randomUUID()}.diff`;
-    await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(storage, name), Buffer.from(changes.diff, "utf8"));
-    await this.store.updateMessage(threadId, replyId, { diffArtifact: name, fileRefs: changes.paths });
-    if (tracker.source === "git") await this.store.setRepositoryDigest(threadId, digest);
-  }
-
   private askPermission(provider: "claude" | "codex", kind: ChatApproval["kind"], summary: string,
     detail: string, signal: AbortSignal): Promise<boolean> {
     const turnSignal = this.activeController?.signal;
@@ -663,10 +750,12 @@ export class ChatController implements vscode.Disposable {
         signal.removeEventListener("abort", onAbort);
         turnSignal?.removeEventListener("abort", onAbort);
         if (this.approval?.id === id) { this.approval = undefined; this.answerApproval = undefined; this.postState(); }
+        this.setLiveTask(accepted ? "Resuming task" : "Permission declined");
         resolve(accepted && vscode.workspace.isTrusted);
       };
       this.approval = { id, provider, kind, summary, detail };
       this.answerApproval = finish;
+      this.setLiveTask("Waiting for your permission");
       signal.addEventListener("abort", onAbort, { once: true });
       turnSignal?.addEventListener("abort", onAbort, { once: true });
       this.view.reveal();
@@ -675,7 +764,7 @@ export class ChatController implements vscode.Disposable {
   }
 
   private async refreshCapabilities(): Promise<void> {
-    if (this.refreshing) return;
+    if (this.refreshing) { this.refreshPending = true; return; }
     this.refreshing = true;
     try {
       const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
@@ -683,33 +772,109 @@ export class ChatController implements vscode.Disposable {
       const claudeExecutable = config.get<string>("claudeExecutable") || "claude";
       const codexExecutable = config.get<string>("codexExecutable") || "codex";
       for (const provider of ["claude", "codex"] as const) {
+        const profile = this.accounts.selected(provider);
+        const profileId = profile?.id ?? "default";
         try {
           if (process.platform !== "linux") throw new Error("Real chat is verified on Linux only.");
           if (provider === "claude") {
-            const info = await inspectClaude(claudeExecutable, cwd);
+            const info = await inspectClaude(claudeExecutable, cwd, profile?.directory, true);
             const gate = await loadClaudeChatGate();
             const sdk = await sdkVersion();
             const compatible = info.version === VERIFIED_CLAUDE_CHAT_CLI && sdk === VERIFIED_CLAUDE_CHAT_SDK;
             const passed = compatible && chatGateMatches(gate, info.version, sdk);
+            if ((this.accounts.selected(provider)?.id ?? "default") !== profileId) continue;
             this.capabilities.set(provider, { provider, available: passed, accountLabel: info.accountLabel,
+              accountEmail: info.accountEmail, usage: info.usage,
               models: info.models, version: info.version, quotaLabel: "Unavailable",
               reason: passed ? undefined : compatible
                 ? "Run Countersign: Verify Claude Chat Isolation for this CLI and SDK version."
                 : "Claude chat requires verified CLI 2.1.109 and SDK 0.3.306." });
+            this.accountEmails.set(`${provider}:${profileId}`, info.accountEmail ?? null);
           } else {
-            const info = await inspectCodex(codexExecutable, cwd);
+            const info = await inspectCodex(codexExecutable, cwd, profile?.directory, true);
             const passed = info.version === "codex-cli 0.163.0";
+            if ((this.accounts.selected(provider)?.id ?? "default") !== profileId) continue;
             this.capabilities.set(provider, { provider, available: passed, accountLabel: info.accountLabel,
+              accountEmail: info.accountEmail, usage: info.usage,
               models: info.models, version: info.version, quotaLabel: "Unavailable",
               reason: passed ? undefined : "Codex app-server needs the verified CLI 0.163.0." });
+            this.accountEmails.set(`${provider}:${profileId}`, info.accountEmail ?? null);
           }
         } catch (error) {
+          if ((this.accounts.selected(provider)?.id ?? "default") !== profileId) continue;
           this.capabilities.set(provider, { provider, available: false, accountLabel: "Unavailable", models: [],
             reason: error instanceof Error ? error.message.slice(0, 200) : "Provider check failed." });
         }
         this.postState();
       }
-    } finally { this.refreshing = false; }
+    } finally {
+      this.refreshing = false;
+      if (this.refreshPending) {
+        this.refreshPending = false;
+        void this.refreshCapabilities();
+      }
+    }
+  }
+
+  private async refreshAccountIdentities(): Promise<void> {
+    if (this.identitiesRefreshing) { this.identitiesRefreshPending = true; return; }
+    this.identitiesRefreshing = true;
+    try {
+      const choices = this.accounts.snapshot();
+      const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+      const config = vscode.workspace.getConfiguration("countersign");
+      const jobs = (["claude", "codex"] as const).flatMap((provider) => [
+        { provider, id: "default", directory: undefined as string | undefined },
+        ...choices.profiles.filter((profile) => profile.provider === provider)
+          .map((profile) => ({ provider, id: profile.id, directory: profile.directory })),
+      ]).filter(({ provider, id }) => choices.selected[provider] !== id);
+      let next = 0;
+      const worker = async (): Promise<void> => {
+        while (next < jobs.length) {
+          const job = jobs[next++];
+          const executable = config.get<string>(job.provider === "claude" ? "claudeExecutable" : "codexExecutable") || job.provider;
+          let email: string | undefined;
+          try {
+            if (process.platform === "linux") email = job.provider === "claude"
+              ? await inspectClaudeAccount(executable, cwd, job.directory)
+              : await inspectCodexAccount(executable, cwd, job.directory);
+          } catch { /* An unavailable profile stays selectable so the user can sign in. */ }
+          if (job.id === "default" || this.accounts.snapshot().profiles.some((entry) =>
+            entry.provider === job.provider && entry.id === job.id && entry.directory === job.directory)) {
+            this.accountEmails.set(`${job.provider}:${job.id}`, email ?? null);
+            this.postState();
+          }
+        }
+      };
+      await Promise.all([worker(), worker()]);
+    } catch { /* Account emails are optional; a failed probe must not break the sidebar. */ }
+    finally {
+      this.identitiesRefreshing = false;
+      if (this.identitiesRefreshPending) {
+        this.identitiesRefreshPending = false;
+        void this.refreshAccountIdentities();
+      }
+    }
+  }
+
+  private saveTurnSettings(raw: unknown): Promise<void> {
+    const next = restoreTurnSettings(raw);
+    if (!isRecord(raw) || !isRecord(raw.selection) ||
+        !["balanced", "strict"].includes(String(raw.mode)) ||
+        !["askBeforeChange", "fullAccess"].includes(String(raw.executionPermission))) {
+      throw new Error("Turn settings are invalid.");
+    }
+    this.turnSettings = next;
+    this.turnSettingsStored = true;
+    this.settingsSave = this.settingsSave.catch(() => {}).then(() =>
+      this.context.workspaceState.update(TURN_SETTINGS_KEY, structuredClone(next)));
+    return this.settingsSave;
+  }
+
+  private setLiveTask(label: string): void {
+    if (!this.activeController) return;
+    this.liveTask = { label, since: Date.now() };
+    this.postState();
   }
 
   private async verifyClaudeGate(): Promise<void> {
@@ -720,7 +885,7 @@ export class ChatController implements vscode.Disposable {
     if (choice !== "Run verification") return;
     try {
       const executable = vscode.workspace.getConfiguration("countersign").get<string>("claudeExecutable") || "claude";
-      const record = await verifyClaudeChatGate(executable);
+      const record = await verifyClaudeChatGate(executable, this.accounts.selected("claude")?.directory);
       await saveClaudeChatGate(record);
       this.notice = `Claude chat isolation passed for SDK ${record.sdkVersion}, CLI ${record.cliVersion}.`;
     } catch (error) {
@@ -730,32 +895,70 @@ export class ChatController implements vscode.Disposable {
     await this.refreshCapabilities();
   }
 
-  private async runMock(threadId: string, replyId: string, prompt: string, signal: AbortSignal): Promise<void> {
-    const parts = ["Mock turn started. ", `Received ${prompt.length} characters. `, "No files were changed."];
-    let text = "";
-    for (const part of parts) {
-      if (signal.aborted) return;
-      await new Promise((resolve) => setTimeout(resolve, 40));
-      if (signal.aborted) return;
-      text += part;
-      await this.store.updateMessage(threadId, replyId, { text });
-      this.postState();
-    }
+  private async mockChatTranscript(text: string): Promise<void> {
+    if (this.activeController) return;
+    const threadId = this.store.activeThread().id;
+    await this.store.append(threadId, { id: randomUUID(), role: "user", text,
+      createdAt: new Date().toISOString(), modeLabel: "Balanced test" });
+    await this.store.append(threadId, { id: randomUUID(), role: "assistant", provider: "mock",
+      text: "Packaged chat storage is working. No provider was called or file changed.",
+      createdAt: new Date().toISOString(), status: "completed", modeLabel: "Balanced test" });
+    this.postState();
   }
 
   private postState(): void {
     const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     const offered = [...this.capabilities.values()].filter((entry) => entry.provider !== "mock" || process.env.COUNTERSIGN_TEST_MODE === "1");
-    this.view.post({ type: "state", state: this.store.snapshot(), capabilities: offered,
-      busy: Boolean(this.activeController), repositoryBusy: root ? isRepositoryLocked(root) : false,
+    const accounts = this.accounts.snapshot();
+    const emails: Record<AccountProvider, Record<string, string | null>> = { claude: {}, codex: {} };
+    for (const [key, value] of this.accountEmails) {
+      const split = key.indexOf(":");
+      const provider = key.slice(0, split);
+      if (accountProvider(provider)) emails[provider][key.slice(split + 1)] = value;
+    }
+    this.view.post({ type: "state", sessionId: this.sessionId, state: this.store.snapshot(),
+      chatRevision: this.store.revision, capabilities: offered,
+      accounts: { ...accounts, emails }, turnSettings: this.turnSettings,
+      turnSettingsStored: this.turnSettingsStored,
+      busy: Boolean(this.activeController || this.sending), repositoryBusy: root ? isRepositoryLocked(root) : false,
+      liveTask: this.liveTask ?? null,
       approval: this.approval ?? null, workflowPrompt: this.workflowPrompt ?? null, notice: this.notice });
   }
+}
+
+function restoreTurnSettings(raw: unknown): TurnSettings {
+  const selection = isRecord(raw) && isRecord(raw.selection) ? raw.selection : {};
+  const value = (key: keyof WorkflowModelSelection): string => {
+    const candidate = selection[key];
+    return typeof candidate === "string" && candidate.length <= 100 && !/\s/.test(candidate) ? candidate : "";
+  };
+  return {
+    mode: isRecord(raw) && raw.mode === "strict" ? "strict" : "balanced",
+    executionPermission: isRecord(raw) && raw.executionPermission === "fullAccess" ? "fullAccess" : "askBeforeChange",
+    selection: { claudeModel: value("claudeModel"), claudeEffort: value("claudeEffort"),
+      codexModel: value("codexModel"), codexEffort: value("codexEffort") },
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isProvider(value: unknown): value is ChatProvider {
-  return value === "mock" || value === "claude" || value === "codex";
+function accountProvider(value: unknown): value is AccountProvider {
+  return value === "claude" || value === "codex";
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+/** Reads a Strict approval from the webview, refusing anything outside the allowed range. */
+function strictApprovalFrom(raw: Record<string, unknown>, data: StrictPlanPromptData | undefined): StrictPlanApprovalAnswer | undefined {
+  if (!data) return undefined;
+  if (raw.decision === "refuse") return { approved: false, executionPermission: data.executionPermission };
+  if (raw.decision !== "approve") return undefined;
+  return {
+    approved: true,
+    executionPermission: raw.executionPermission === "fullAccess" ? "fullAccess" : "askBeforeChange",
+  };
 }

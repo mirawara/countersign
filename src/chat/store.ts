@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { ChatMessage, ChatMode, ChatProvider, ChatState, ChatThread } from "./types";
+import { ChatMessage, ChatState, ChatThread } from "./types";
 
 export interface ChatStorage {
   get<T>(key: string): T | undefined;
@@ -10,22 +10,24 @@ const KEY = "countersign.chat.v1";
 const MAX_THREADS = 20;
 const MAX_MESSAGES = 200;
 const MAX_TEXT = 100_000;
-const BASE_MODES: ChatMode[] = [
-  { id: "chat", label: "Chat (one provider)", protocol: "chat", timeoutMinutes: 10 },
-  { id: "balanced", label: "Claude + Codex (Balanced)", protocol: "balanced" },
-];
 
 export class ChatStore {
   private state: ChatState;
   private pendingSave: Promise<void> = Promise.resolve();
+  private changeRevision = 0;
 
   constructor(private readonly storage: ChatStorage) {
     this.state = restore(storage.get<unknown>(KEY));
+    // A restored message has no AbortController or provider session in this host.
+    // Preserve its partial output but stop presenting it as live work.
+    if (interruptRestoredRuns(this.state)) void this.save().catch(() => {});
   }
 
   snapshot(): ChatState {
     return structuredClone(this.state);
   }
+
+  get revision(): number { return this.changeRevision; }
 
   activeThread(): ChatThread {
     return this.state.threads.find((thread) => thread.id === this.state.activeThreadId) ?? this.state.threads[0];
@@ -71,26 +73,6 @@ export class ChatStore {
     await this.save();
   }
 
-  async createMode(label: string, instruction: string, timeoutMinutes: number): Promise<ChatMode> {
-    if (this.state.modes.length >= 12) throw new Error("At most ten custom modes are supported.");
-    const cleanLabel = label.trim().replace(/\s+/g, " ").slice(0, 50);
-    const cleanInstruction = instruction.trim().slice(0, 2_000);
-    if (!cleanLabel || !cleanInstruction || !Number.isInteger(timeoutMinutes) || timeoutMinutes < 1 || timeoutMinutes > 60) {
-      throw new Error("A mode needs a name, instruction and timeout from 1 to 60 minutes.");
-    }
-    const mode: ChatMode = { id: `custom-${randomUUID()}`, label: cleanLabel, protocol: "chat",
-      instruction: cleanInstruction, timeoutMinutes };
-    this.state.modes.push(mode);
-    await this.save();
-    return mode;
-  }
-
-  async deleteMode(id: string): Promise<void> {
-    if (!id.startsWith("custom-")) throw new Error("Built-in modes cannot be deleted.");
-    this.state.modes = this.state.modes.filter((mode) => mode.id !== id);
-    await this.save();
-  }
-
   async append(threadId: string, message: ChatMessage): Promise<ChatMessage | undefined> {
     const thread = this.requireThread(threadId);
     thread.messages.push(cleanMessage(message));
@@ -110,30 +92,6 @@ export class ChatStore {
     await this.save();
   }
 
-  async setSession(threadId: string, provider: Exclude<ChatProvider, "mock">, sessionId: string,
-    accountLabel: string, requestedModel: string): Promise<void> {
-    const thread = this.requireThread(threadId);
-    thread.sessions[provider] = sessionId;
-    thread.sessionAccounts ??= {};
-    thread.sessionAccounts[provider] = accountLabel;
-    thread.sessionModels ??= {};
-    thread.sessionModels[provider] = requestedModel;
-    await this.save();
-  }
-
-  resumableSession(threadId: string, provider: Exclude<ChatProvider, "mock">,
-    accountLabel: string, requestedModel: string): string | undefined {
-    const thread = this.requireThread(threadId);
-    return thread.sessionAccounts?.[provider] === accountLabel && thread.sessionModels?.[provider] === requestedModel
-      ? thread.sessions[provider] : undefined;
-  }
-
-  async setRepositoryDigest(threadId: string, digest: string): Promise<void> {
-    if (!/^[0-9a-f]{64}$/.test(digest)) throw new Error("Invalid repository digest.");
-    this.requireThread(threadId).repositoryDigest = digest;
-    await this.save();
-  }
-
   private requireThread(id: string): ChatThread {
     const thread = this.state.threads.find((entry) => entry.id === id);
     if (!thread) throw new Error("Chat thread does not exist.");
@@ -141,6 +99,7 @@ export class ChatStore {
   }
 
   private save(): Promise<void> {
+    this.changeRevision++;
     const state = structuredClone(this.state);
     this.pendingSave = this.pendingSave.catch(() => {}).then(() => this.storage.update(KEY, state));
     return this.pendingSave;
@@ -149,7 +108,7 @@ export class ChatStore {
 
 function freshThread(): ChatThread {
   const now = new Date().toISOString();
-  return { id: randomUUID(), title: "New chat", createdAt: now, updatedAt: now, messages: [], sessions: {} };
+  return { id: randomUUID(), title: "New chat", createdAt: now, updatedAt: now, messages: [] };
 }
 
 function cleanMessage(message: ChatMessage): ChatMessage {
@@ -172,7 +131,7 @@ function cleanMessage(message: ChatMessage): ChatMessage {
     requestedModel: typeof message.requestedModel === "string" ? message.requestedModel.slice(0, 100) : undefined,
     requestedEffort: typeof message.requestedEffort === "string" ? message.requestedEffort.slice(0, 20) : undefined,
     effectiveEffort: typeof message.effectiveEffort === "string" ? message.effectiveEffort.slice(0, 20) : undefined,
-    status: ["running", "completed", "failed", "cancelled"].includes(String(message.status)) ? message.status : undefined,
+    status: ["running", "completed", "failed", "cancelled", "interrupted"].includes(String(message.status)) ? message.status : undefined,
     activity: Array.isArray(message.activity) ? message.activity.filter((entry): entry is string => typeof entry === "string")
       .slice(-100).map((entry) => entry.slice(0, 2_000)) : undefined,
     fileRefs: Array.isArray(message.fileRefs) ? message.fileRefs.filter((entry): entry is string => typeof entry === "string")
@@ -191,39 +150,35 @@ function finiteNonnegative(value: unknown): value is number {
 function restore(raw: unknown): ChatState {
   if (!isRecord(raw) || raw.version !== 1 || !Array.isArray(raw.threads)) {
     const thread = freshThread();
-    return { version: 1, activeThreadId: thread.id, threads: [thread], modes: structuredClone(BASE_MODES) };
+    return { version: 1, activeThreadId: thread.id, threads: [thread] };
   }
   const threads: ChatThread[] = raw.threads.slice(0, MAX_THREADS).filter(isThread).map((thread) => ({
-    ...thread,
+    id: thread.id, title: thread.title, createdAt: thread.createdAt, updatedAt: thread.updatedAt,
     messages: thread.messages.slice(-MAX_MESSAGES).filter(isMessage).map(cleanMessage),
-    sessions: isRecord(thread.sessions) ? {
-      ...(typeof thread.sessions.claude === "string" ? { claude: thread.sessions.claude } : {}),
-      ...(typeof thread.sessions.codex === "string" ? { codex: thread.sessions.codex } : {}),
-    } : {},
-    sessionModels: isRecord(thread.sessionModels) ? {
-      ...(typeof thread.sessionModels.claude === "string" ? { claude: thread.sessionModels.claude.slice(0, 100) } : {}),
-      ...(typeof thread.sessionModels.codex === "string" ? { codex: thread.sessionModels.codex.slice(0, 100) } : {}),
-    } : {},
-    sessionAccounts: isRecord(thread.sessionAccounts) ? {
-      ...(typeof thread.sessionAccounts.claude === "string" ? { claude: thread.sessionAccounts.claude.slice(0, 200) } : {}),
-      ...(typeof thread.sessionAccounts.codex === "string" ? { codex: thread.sessionAccounts.codex.slice(0, 200) } : {}),
-    } : {},
-    repositoryDigest: typeof thread.repositoryDigest === "string" && /^[0-9a-f]{64}$/.test(thread.repositoryDigest)
-      ? thread.repositoryDigest : undefined,
   }));
   if (threads.length === 0) threads.push(freshThread());
   const activeThreadId = typeof raw.activeThreadId === "string" && threads.some((thread) => thread.id === raw.activeThreadId)
     ? raw.activeThreadId : threads[0].id;
-  const modes = [...structuredClone(BASE_MODES), ...(Array.isArray(raw.modes) ? raw.modes.filter(isCustomMode).slice(0, 10) : [])];
-  return { version: 1, activeThreadId, threads, modes };
+  return { version: 1, activeThreadId, threads };
 }
 
-function isCustomMode(value: unknown): value is ChatMode {
-  return isRecord(value) && typeof value.id === "string" && /^custom-[0-9a-f-]{36}$/.test(value.id) &&
-    typeof value.label === "string" && value.label.length > 0 && value.label.length <= 50 &&
-    value.protocol === "chat" && typeof value.instruction === "string" && value.instruction.length > 0 &&
-    value.instruction.length <= 2_000 && typeof value.timeoutMinutes === "number" &&
-    Number.isInteger(value.timeoutMinutes) && value.timeoutMinutes >= 1 && value.timeoutMinutes <= 60;
+function interruptRestoredRuns(state: ChatState): boolean {
+  let changed = false;
+  const now = new Date().toISOString();
+  for (const thread of state.threads) {
+    for (const message of thread.messages) {
+      if (message.role !== "assistant" || message.status !== "running") continue;
+      const note = message.modeLabel === "Strict"
+        ? "The VS Code extension host restarted while this Strict task was running. Countersign cannot resume it. Inspect the workspace before starting again. If a Strict marker blocks the next task, clear it with the Countersign command only after checking that no old task is active."
+        : "The VS Code extension host restarted while this task was running. Countersign cannot resume it. Inspect the workspace before starting again.";
+      message.status = "interrupted";
+      message.text = message.text ? `${message.text.slice(0, MAX_TEXT - note.length - 2)}\n\n${note}` : note;
+      message.activity = [...(message.activity ?? []), note].slice(-100);
+      thread.updatedAt = now;
+      changed = true;
+    }
+  }
+  return changed;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

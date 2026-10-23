@@ -3,15 +3,24 @@
   const api = acquireVsCodeApi();
   const el = (id) => document.getElementById(id);
   const dom = Object.fromEntries([
-    "thread", "new-thread", "rename-thread", "export-thread", "delete-thread", "search", "provider", "model", "effort", "mode", "add-mode", "delete-mode", "account", "refresh", "repo-lock",
-    "balanced-options", "balanced-claude-model", "balanced-claude-effort", "balanced-codex-model", "balanced-codex-effort", "execution-permission",
-    "notice", "messages", "approval", "approval-summary", "approval-detail", "approve", "deny", "cancel-approval",
+    "thread", "new-thread", "rename-thread", "export-thread", "delete-thread", "search", "search-row", "search-toggle",
+    "account", "refresh", "repo-lock", "settings", "settings-scrim", "settings-close", "settings-toggle", "settings-perm",
+    "claude-account", "claude-email", "claude-usage", "add-claude-account", "login-claude-account", "remove-claude-account",
+    "codex-account", "codex-email", "codex-usage", "add-codex-account", "login-codex-account", "remove-codex-account",
+    "balanced-claude-model", "balanced-claude-effort", "balanced-codex-model", "balanced-codex-effort", "execution-permission",
+    "settings-digest", "selection-notice", "notice", "messages", "empty", "approval", "approval-summary", "approval-detail", "approve", "deny", "cancel-approval",
     "workflow-prompt", "workflow-title", "workflow-detail", "workflow-answer-label", "workflow-answer", "workflow-submit", "workflow-cancel",
-    "attachment", "prompt", "add-file", "stop", "send",
+    "workflow-secondary", "strict-controls", "strict-permission", "strict-hint",
+    "mode",
+    "attachment", "prompt", "stop", "send", "send-label",
   ].map((id) => [id.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase()), el(id)]));
   let state = null;
+  let stateSession = "";
+  let chatRevision = -1;
+  let renderedChatKey = "";
+  let renderedThreadsKey = "";
   let capabilities = [];
-  let modes = [{ id: "chat", label: "Chat" }];
+  let accountChoices = { profiles: [], selected: { claude: "default", codex: "default" } };
   let busy = false;
   let repositoryBusy = false;
   let approval = null;
@@ -19,9 +28,38 @@
   let workflowPromptId = "";
   let attachment = null;
   let notice = "";
-  const selectedModels = {};
-  const selectedEfforts = {};
+  let settingsOpen = false;
+  let searchOpen = false;
+  let liveTask = null;
+  let preferencesLoaded = false;
+  let settingsEdited = false;
+  const savedUi = api.getState?.() || null;
   const balancedSelection = { claudeModel: "", claudeEffort: "", codexModel: "", codexEffort: "" };
+
+  function turnSettings() {
+    return { mode: dom.mode.value === "strict" ? "strict" : "balanced",
+      executionPermission: dom.executionPermission.value === "fullAccess" ? "fullAccess" : "askBeforeChange",
+      selection: { ...balancedSelection } };
+  }
+  function persistUi() {
+    api.setState?.({ turnSettings: turnSettings(), draft: dom.prompt.value,
+      settingsOpen, searchOpen });
+  }
+  function persistTurnSettings() {
+    preferencesLoaded = true;
+    settingsEdited = true;
+    persistUi();
+    post({ type: "turnSettings", settings: turnSettings() });
+  }
+  function applyTurnSettings(raw) {
+    if (!raw || typeof raw !== "object") return;
+    dom.mode.value = raw.mode === "strict" ? "strict" : "balanced";
+    dom.executionPermission.value = raw.executionPermission === "fullAccess" ? "fullAccess" : "askBeforeChange";
+    for (const key of Object.keys(balancedSelection)) {
+      const value = raw.selection?.[key];
+      balancedSelection[key] = typeof value === "string" && value.length <= 100 && !/\s/.test(value) ? value : "";
+    }
+  }
 
   const post = (message) => api.postMessage(message);
   const option = (value, label) => {
@@ -30,6 +68,12 @@
     node.textContent = label;
     return node;
   };
+  const setOptions = (control, entries) => {
+    if (control.options.length !== entries.length || entries.some((entry, index) =>
+      control.options[index].value !== entry.value || control.options[index].textContent !== entry.label)) {
+      control.replaceChildren(...entries.map((entry) => option(entry.value, entry.label)));
+    }
+  };
   const node = (tag, className, text) => {
     const created = document.createElement(tag);
     if (className) created.className = className;
@@ -37,62 +81,125 @@
     return created;
   };
   const providerLabel = (provider) => provider === "claude" ? "Claude" : provider === "codex" ? "Codex" : provider;
-  const currentCapability = () => capabilities.find((entry) => entry.provider === dom.provider.value);
-  const currentModel = () => currentCapability()?.models.find((entry) => entry.value === dom.model.value);
-
+  const capabilityFor = (provider) => capabilities.find((entry) => entry.provider === provider);
+  const emailFor = (provider, id) => accountChoices.emails?.[provider]?.[id] ||
+    (accountChoices.selected?.[provider] === id ? capabilityFor(provider)?.accountEmail : "") || "";
+  const emailDescription = (provider, id) => emailFor(provider, id) ||
+    (accountChoices.emails?.[provider] && Object.hasOwn(accountChoices.emails[provider], id)
+      ? "email unavailable" : "checking email");
+  function usageNodes(usage) {
+    if (!usage) return [node("span", "", "Usage unavailable from this CLI")];
+    const checked = new Date(usage.checkedAt);
+    const when = Number.isNaN(checked.getTime()) ? "" : ` · checked ${checked.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+    const rows = [node("span", "usage-heading", `Plan usage${when}`)];
+    if (usage.access === "blocked") rows.push(node("span", "usage-blocked", "Codex reports included usage blocked"));
+    if (!Array.isArray(usage.windows) || !usage.windows.length) rows.push(node("span", "", "No quota windows reported"));
+    for (const window of (usage.windows || []).slice(0, 12)) {
+      const reset = new Date(window.resetsAt);
+      const resets = window.resetsAt && !Number.isNaN(reset.getTime())
+        ? ` · resets ${reset.toLocaleString([], { dateStyle: "short", timeStyle: "short" })}` : "";
+      rows.push(node("span", "", `${window.label}: ${window.usedPercent}% used${resets}`));
+    }
+    return rows;
+  }
+  function renderAccounts() {
+    for (const provider of ["claude", "codex"]) {
+      const name = providerLabel(provider);
+      const control = dom[`${provider}Account`];
+      const profiles = accountChoices.profiles.filter((entry) => entry.provider === provider);
+      const email = emailFor(provider, accountChoices.selected[provider] || "default");
+      dom[`${provider}Email`].textContent = email ? `Signed in as ${email}` : "Email unavailable · sign in or refresh";
+      dom[`${provider}Email`].title = email || "The selected CLI login has not supplied an email.";
+      dom[`${provider}Usage`].replaceChildren(...usageNodes(capabilityFor(provider)?.usage));
+      const selected = accountChoices.selected[provider] || "default";
+      const withIdentity = (id, label) => `${label} · ${emailDescription(provider, id)}`;
+      const entries = [{ id: "default", label: withIdentity("default", "Current CLI login") },
+        ...profiles.map((entry) => ({ id: entry.id, label: withIdentity(entry.id, entry.label) }))];
+      if (document.activeElement !== control && (control.options.length !== entries.length || entries.some((entry, index) =>
+        control.options[index].value !== entry.id || control.options[index].textContent !== entry.label))) {
+        control.replaceChildren(...entries.map((entry) => option(entry.id, entry.label)));
+      }
+      if (document.activeElement !== control) control.value = selected;
+      control.disabled = busy;
+      dom[`add${name}Account`].disabled = busy;
+      dom[`login${name}Account`].disabled = busy;
+      dom[`remove${name}Account`].disabled = busy || control.value === "default";
+    }
+  }
   function renderSelectors() {
-    const fallback = capabilities.find((entry) => entry.available)?.provider || capabilities[0]?.provider || "";
-    const provider = dom.provider.value || fallback;
-    dom.provider.replaceChildren(...capabilities.map((entry) => option(entry.provider, providerLabel(entry.provider))));
-    dom.provider.value = capabilities.some((entry) => entry.provider === provider) ? provider : fallback;
-    const capability = currentCapability();
-    const previousModel = selectedModels[dom.provider.value] || dom.model.value;
-    dom.model.replaceChildren(...(capability?.models ?? []).map((entry) => option(entry.value, entry.label)));
-    if (capability?.models.some((entry) => entry.value === previousModel)) dom.model.value = previousModel;
-    selectedModels[dom.provider.value] = dom.model.value;
-    renderEfforts();
-    const mode = dom.mode.value || "chat";
-    dom.mode.replaceChildren(...modes.map((entry) => option(entry.id, entry.label)));
-    dom.mode.value = modes.some((entry) => entry.id === mode) ? mode : modes[0]?.id || "chat";
-    const selectedMode = modes.find((entry) => entry.id === dom.mode.value);
-    const balanced = selectedMode?.protocol === "balanced";
-    dom.addMode.disabled = busy;
-    dom.deleteMode.disabled = busy || !selectedMode?.id.startsWith("custom-");
-    dom.provider.disabled = balanced;
-    dom.model.disabled = balanced;
-    dom.effort.disabled = balanced;
-    for (const control of [dom.provider, dom.model, dom.effort]) control.parentElement.classList.toggle("hidden", balanced);
-    dom.balancedOptions.classList.toggle("hidden", !balanced);
-    if (balanced) renderBalancedSelectors();
-    dom.account.textContent = balanced
-      ? `Real task · ${["claude", "codex"].map((name) => {
-        const info = capabilities.find((entry) => entry.provider === name);
-        return info?.models.length ? `${providerLabel(name)}: ${info.models.length} models`
-          : `${providerLabel(name)}: ${info?.reason || "Refresh to load models"}`;
-      }).join(" · ")}`
-      : capability?.available
-      ? `Account: ${capability.accountLabel}${capability.version ? ` · ${capability.version}` : ""}${capability.quotaLabel ? ` · Quota: ${capability.quotaLabel}` : ""}`
-      : `Account: ${capability?.reason || "Unavailable"}`;
-    dom.repoLock.textContent = busy
-      ? "A Countersign task is running in this chat."
-      : repositoryBusy
-        ? "Repository busy: another Countersign task is active in this VS Code window."
-        : "One Countersign task at a time per repository in this VS Code window.";
-    dom.send.disabled = busy || repositoryBusy || (!balanced && !capability?.available);
-    dom.send.textContent = balanced ? "Start workflow" : "Send";
+    renderBalancedSelectors();
+    dom.account.textContent = `Claude + Codex · ${["claude", "codex"].map((name) => {
+      const info = capabilityFor(name);
+      const identity = info?.accountEmail || "email unavailable";
+      return `${providerLabel(name)}: ${identity}${info?.reason ? ` (${info.reason})` : ""}`;
+    }).join(" · ")}`;
+    renderLiveStatus();
+    dom.send.disabled = busy || repositoryBusy;
+    dom.settingsToggle.disabled = busy;
+    if (busy && settingsOpen) setSettingsOpen(false);
+    renderModeControls();
     dom.stop.classList.toggle("hidden", !busy);
+    renderSettingsDigest();
   }
 
-  function renderEfforts() {
-    const levels = currentModel()?.effortLevels ?? [];
-    const key = `${dom.provider.value}:${dom.model.value}`;
-    const previous = selectedEfforts[key] || dom.effort.value;
-    dom.effort.replaceChildren(option("", "Default"), ...levels.map((level) => option(level, level)));
-    dom.effort.value = levels.includes(previous) ? previous : "";
-    selectedEfforts[key] = dom.effort.value;
+  function renderLiveStatus() {
+    const elapsed = liveTask && Number.isFinite(liveTask.since)
+      ? Math.max(0, Math.floor((Date.now() - liveTask.since) / 1000)) : 0;
+    const age = elapsed < 60 ? `${elapsed}s` : `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`;
+    dom.repoLock.textContent = busy ? `${liveTask?.label || "Task starting"} · ${age} since last update`
+      : repositoryBusy ? "Repository busy: task running elsewhere" : "";
+    dom.repoLock.setAttribute?.("title", busy
+      ? `${liveTask?.label || "Task starting"}. Last state update ${age} ago. The provider may be working silently.`
+      : repositoryBusy
+        ? "Repository busy: another Countersign task is active in this VS Code window."
+        : "One Countersign task at a time per repository in this VS Code window.");
+    dom.repoLock.classList.toggle("busy", busy || repositoryBusy);
+  }
+
+  /** Keeps the composer button honest about what the next turn will use. */
+  function renderSettingsDigest() {
+    const label = (control) => (control.value && control.options?.[control.selectedIndex]?.textContent) || control.value;
+    const agent = (name, modelControl, effortControl) => {
+      const model = label(modelControl);
+      if (!model) return `${name} default`;
+      const effort = label(effortControl);
+      return effort ? `${model} · ${effort}` : model;
+    };
+    const claude = agent("Claude", dom.balancedClaudeModel, dom.balancedClaudeEffort);
+    const codex = agent("Codex", dom.balancedCodexModel, dom.balancedCodexEffort);
+    const chosen = dom.balancedClaudeModel.value || dom.balancedCodexModel.value;
+    const claudeEmail = emailFor("claude", dom.claudeAccount.value) || "email unavailable";
+    const codexEmail = emailFor("codex", dom.codexAccount.value) || "email unavailable";
+    const mode = dom.mode.value === "strict" ? "Strict" : "Balanced";
+    const digest = `${claudeEmail} / ${codexEmail} · ${mode} · ${chosen ? `${claude} / ${codex}` : "Default models"}`;
+    const fullAccess = dom.executionPermission.value === "fullAccess";
+    const permission = fullAccess ? "Full access" : "Ask";
+    dom.settingsDigest.textContent = digest;
+    dom.settingsPerm.textContent = permission;
+    dom.settingsPerm.classList.toggle("warn", fullAccess);
+    dom.settingsToggle.setAttribute?.("title", `Turn settings — ${digest}, ${permission} after plan approval`);
+  }
+
+  function setSettingsOpen(open) {
+    settingsOpen = open;
+    dom.settings.classList.toggle("hidden", !open);
+    dom.settingsScrim.classList.toggle("hidden", !open);
+    dom.settingsToggle.classList.toggle("active", open);
+    dom.settingsToggle.setAttribute?.("aria-expanded", String(open));
+    persistUi();
+  }
+
+  function setSearchOpen(open) {
+    searchOpen = open;
+    dom.searchRow.classList.toggle("hidden", !open);
+    dom.searchToggle.classList.toggle("active", open);
+    if (!open && dom.search.value) { dom.search.value = ""; renderThreads(); }
+    if (open) dom.search.focus?.();
+    persistUi();
   }
 
   function renderBalancedSelectors() {
+    const unavailable = [];
     for (const provider of ["claude", "codex"]) {
       const name = provider === "claude" ? "Claude" : "Codex";
       const modelKey = `${provider}Model`;
@@ -101,27 +208,44 @@
       const effortControl = dom[`balanced${name}Effort`];
       const models = (capabilities.find((entry) => entry.provider === provider)?.models ?? [])
         .filter((entry) => entry.value !== "default");
-      modelControl.replaceChildren(option("", "Default (CLI)"), ...models.map((entry) => option(entry.value, entry.label)));
-      if (models.some((entry) => entry.value === balancedSelection[modelKey])) modelControl.value = balancedSelection[modelKey];
-      else balancedSelection[modelKey] = "";
+      setOptions(modelControl, [{ value: "", label: "Default (CLI)" },
+        ...models.map((entry) => ({ value: entry.value, label: entry.label })),
+        ...(balancedSelection[modelKey] && !models.some((entry) => entry.value === balancedSelection[modelKey])
+          ? [{ value: balancedSelection[modelKey], label: `Saved: ${balancedSelection[modelKey]} (unavailable)` }] : [])]);
+      modelControl.value = balancedSelection[modelKey];
+      if (models.length && balancedSelection[modelKey] &&
+          !models.some((entry) => entry.value === balancedSelection[modelKey])) {
+        unavailable.push(`${name} model “${balancedSelection[modelKey]}” is not in this catalogue; the saved choice remains visible. A task started now will use the CLI default for it.`);
+      }
       modelControl.disabled = busy;
       const selected = models.find((entry) => entry.value === modelControl.value);
-      const levels = (selected?.effortLevels ?? []).filter((level) => provider !== "claude" ||
-        ["low", "medium", "high", "max"].includes(level));
-      effortControl.replaceChildren(option("", "Default (CLI)"), ...levels.map((level) => option(level, level)));
-      if (levels.includes(balancedSelection[effortKey])) effortControl.value = balancedSelection[effortKey];
-      else balancedSelection[effortKey] = "";
+      // Exactly the levels this model's catalogue reports, with its own labels.
+      const levels = selected?.effortLevels ?? [];
+      if (selected && balancedSelection[effortKey] &&
+          !levels.some((level) => level.value === balancedSelection[effortKey])) {
+        unavailable.push(`${name} effort “${balancedSelection[effortKey]}” is not offered for this model; the saved choice was replaced with the CLI default.`);
+        balancedSelection[effortKey] = "";
+      }
+      setOptions(effortControl, [{ value: "", label: "Default (CLI)" },
+        ...levels.map((level) => ({ value: level.value, label: level.label || level.value }))]);
+      effortControl.value = balancedSelection[effortKey];
       effortControl.disabled = !selected || busy;
     }
+    dom.selectionNotice.textContent = unavailable.join(" ");
+    dom.selectionNotice.classList.toggle("hidden", unavailable.length === 0);
   }
 
   function renderThreads() {
     const current = state?.activeThreadId;
     const query = dom.search.value.trim().toLowerCase();
-    const threads = (state?.threads ?? []).filter((thread) => !query || thread.title.toLowerCase().includes(query) ||
-      thread.messages.some((message) => message.text.toLowerCase().includes(query)));
-    dom.thread.replaceChildren(...threads.map((thread) => option(thread.id, thread.title)));
-    if (current) dom.thread.value = current;
+    const key = `${stateSession}:${chatRevision}:${query}`;
+    if (key !== renderedThreadsKey) {
+      const threads = (state?.threads ?? []).filter((thread) => !query || thread.title.toLowerCase().includes(query) ||
+        thread.messages.some((message) => message.text.toLowerCase().includes(query)));
+      dom.thread.replaceChildren(...threads.map((thread) => option(thread.id, thread.title)));
+      if (current) dom.thread.value = current;
+      renderedThreadsKey = key;
+    }
     dom.deleteThread.disabled = busy || !current;
     dom.renameThread.disabled = busy || !current;
     dom.exportThread.disabled = !current;
@@ -293,14 +417,15 @@
   }
 
   function renderMessages() {
+    const key = `${stateSession}:${chatRevision}`;
+    if (renderedChatKey === key) return;
     const thread = state?.threads.find((entry) => entry.id === state.activeThreadId);
     const nearBottom = dom.messages.scrollHeight - dom.messages.scrollTop - dom.messages.clientHeight < 70;
-    if (!thread?.messages.length) {
-      dom.messages.replaceChildren(node("p", "empty", "Start a conversation about this repository."));
-    } else {
-      dom.messages.replaceChildren(...thread.messages.map(messageNode));
-    }
+    const messages = thread?.messages ?? [];
+    dom.empty.classList.toggle("hidden", messages.length > 0);
+    dom.messages.replaceChildren(...messages.map(messageNode));
     if (nearBottom) dom.messages.scrollTop = dom.messages.scrollHeight;
+    renderedChatKey = key;
   }
 
   function renderApproval() {
@@ -312,16 +437,33 @@
   function renderWorkflowPrompt() {
     dom.workflowPrompt.classList.toggle("hidden", !workflowPrompt);
     if (!workflowPrompt) { workflowPromptId = ""; return; }
+    const strict = workflowPrompt.strict || null;
     if (workflowPrompt.id !== workflowPromptId) {
       dom.workflowAnswer.value = "";
       workflowPromptId = workflowPrompt.id;
+      if (strict) dom.strictPermission.value = strict.executionPermission;
     }
     dom.workflowTitle.textContent = workflowPrompt.title;
     dom.workflowDetail.textContent = workflowPrompt.detail;
     const question = workflowPrompt.kind === "question";
+    const paused = workflowPrompt.kind === "pause";
     dom.workflowAnswerLabel.classList.toggle("hidden", !question);
-    dom.workflowSubmit.textContent = question ? "Send answer" : "Approve plan";
+    dom.strictControls.classList.toggle("hidden", !strict);
+    if (strict) {
+      // The estimate is shown, never enforced.
+      dom.strictHint.textContent = strict.expectedFilesComplete
+        ? `Plan ${strict.planHash.slice(0, 12)}… expects ${strict.expectedFileCount} file(s).`
+        : `Plan ${strict.planHash.slice(0, 12)}… cannot estimate how many files it will touch.`;
+    }
+    dom.workflowSubmit.textContent = question ? "Send answer" : paused ? "Resume task" : "Approve plan";
     dom.workflowSubmit.disabled = question && !dom.workflowAnswer.value.trim();
+    const secondary = paused ? "Stop task" : strict ? "Refuse plan" : "";
+    dom.workflowSecondary.textContent = secondary;
+    dom.workflowSecondary.classList.toggle("hidden", !secondary);
+  }
+
+  function renderModeControls() {
+    dom.sendLabel.textContent = dom.mode.value === "strict" ? "Start Strict task" : "Start workflow";
   }
 
   function renderAttachment() {
@@ -332,6 +474,7 @@
 
   function render() {
     renderThreads();
+    renderAccounts();
     renderSelectors();
     renderMessages();
     renderApproval();
@@ -344,15 +487,36 @@
     const message = event.data;
     if (!message || typeof message !== "object") return;
     if (message.type === "state") {
+      if (!preferencesLoaded && typeof savedUi?.draft === "string") {
+        dom.prompt.value = savedUi.draft.slice(0, 100_000);
+      }
+      if (!preferencesLoaded || !settingsEdited) {
+        // Workspace state is authoritative after a reload. The webview memento can be
+        // older and must never write its copy back over a newer workspace value.
+        if (message.turnSettingsStored) applyTurnSettings(message.turnSettings);
+        else if (!preferencesLoaded && savedUi?.turnSettings) {
+          applyTurnSettings(savedUi.turnSettings);
+          post({ type: "turnSettings", settings: turnSettings() });
+        }
+        preferencesLoaded = true;
+        persistUi();
+      }
       state = message.state;
+      stateSession = typeof message.sessionId === "string" ? message.sessionId : "";
+      chatRevision = Number.isInteger(message.chatRevision) ? message.chatRevision : chatRevision + 1;
       capabilities = Array.isArray(message.capabilities) ? message.capabilities : [];
-      modes = Array.isArray(message.state?.modes) && message.state.modes.length ? message.state.modes : modes;
+      accountChoices = message.accounts || accountChoices;
       busy = message.busy === true;
       repositoryBusy = message.repositoryBusy === true;
+      liveTask = message.liveTask || null;
       approval = message.approval || null;
       workflowPrompt = message.workflowPrompt || null;
       notice = message.notice || "";
-      render();
+      try { render(); }
+      catch (error) {
+        dom.notice.textContent = `The sidebar could not render this update. Reopen the view or press Refresh. ${String(error).slice(0, 160)}`;
+        post({ type: "uiError", detail: String(error).slice(0, 200) });
+      }
     } else if (message.type === "attachment") {
       attachment = message.attachment || null;
       renderAttachment();
@@ -360,32 +524,43 @@
       dom.prompt.value = "";
       attachment = null;
       renderAttachment();
+      persistUi();
     }
   });
 
-  dom.provider.addEventListener("change", () => {
-    renderSelectors();
-    post({ type: "discover", provider: dom.provider.value });
-  });
-  dom.mode.addEventListener("change", () => {
-    renderSelectors();
-    if (dom.mode.value === "balanced") post({ type: "refresh" });
-  });
   for (const provider of ["claude", "codex"]) {
     const name = provider === "claude" ? "Claude" : "Codex";
+    dom[`${provider}Account`].addEventListener("change", (event) => {
+      post({ type: "selectAccount", provider, id: event.target.value });
+    });
+    dom[`${provider}Account`].addEventListener("blur", renderAccounts);
+    dom[`add${name}Account`].addEventListener("click", () => post({ type: "addAccount", provider }));
+    dom[`login${name}Account`].addEventListener("click", () => post({ type: "loginAccount", provider }));
+    dom[`remove${name}Account`].addEventListener("click", () => post({ type: "removeAccount", provider }));
     dom[`balanced${name}Model`].addEventListener("change", (event) => {
       balancedSelection[`${provider}Model`] = event.target.value;
-      balancedSelection[`${provider}Effort`] = "";
+      // The level is not wiped here: the catalogue of the new model decides whether it
+      // survives, and dropping it silently is exactly what the notice exists to prevent.
       renderBalancedSelectors();
+      renderSettingsDigest();
+      persistTurnSettings();
     });
     dom[`balanced${name}Effort`].addEventListener("change", (event) => {
       balancedSelection[`${provider}Effort`] = event.target.value;
+      renderSettingsDigest();
+      persistTurnSettings();
     });
   }
-  dom.addMode.addEventListener("click", () => post({ type: "addMode" }));
-  dom.deleteMode.addEventListener("click", () => post({ type: "deleteMode", id: dom.mode.value }));
-  dom.model.addEventListener("change", () => { selectedModels[dom.provider.value] = dom.model.value; renderEfforts(); });
-  dom.effort.addEventListener("change", () => { selectedEfforts[`${dom.provider.value}:${dom.model.value}`] = dom.effort.value; });
+  dom.executionPermission.addEventListener("change", () => { renderSettingsDigest(); persistTurnSettings(); });
+  dom.settingsToggle.addEventListener("click", () => setSettingsOpen(!settingsOpen));
+  dom.settingsClose.addEventListener("click", () => setSettingsOpen(false));
+  dom.settingsScrim.addEventListener("click", () => setSettingsOpen(false));
+  dom.searchToggle.addEventListener("click", () => setSearchOpen(!searchOpen));
+  document.addEventListener?.("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    if (settingsOpen) setSettingsOpen(false);
+    else if (searchOpen) setSearchOpen(false);
+  });
   dom.thread.addEventListener("change", () => post({ type: "selectThread", id: dom.thread.value }));
   dom.newThread.addEventListener("click", () => post({ type: "newThread" }));
   dom.deleteThread.addEventListener("click", () => post({ type: "deleteThread", id: dom.thread.value }));
@@ -393,16 +568,16 @@
   dom.exportThread.addEventListener("click", () => post({ type: "exportThread", id: dom.thread.value }));
   dom.search.addEventListener("input", renderThreads);
   dom.refresh.addEventListener("click", () => post({ type: "refresh" }));
-  dom.addFile.addEventListener("click", () => post({ type: "addFile" }));
   dom.attachment.addEventListener("click", () => { attachment = null; renderAttachment(); });
   dom.stop.addEventListener("click", () => post({ type: "cancel" }));
   dom.send.addEventListener("click", () => {
     if (busy || !dom.prompt.value.trim()) return;
-    const balanced = dom.mode.value === "balanced";
-    post({ type: "send", text: dom.prompt.value, provider: dom.provider.value,
-      model: dom.model.value, effort: dom.effort.value, mode: dom.mode.value, attachment,
-      agents: balanced ? "real" : undefined,
-      selection: balanced ? { ...balancedSelection } : undefined,
+    setSettingsOpen(false);
+    const mode = dom.mode.value === "strict" ? "strict" : "balanced";
+    post({ type: "send", text: dom.prompt.value, attachment,
+      mode: dom.mode.value === "strict" ? "strict" : "balanced",
+      accounts: { claude: dom.claudeAccount.value, codex: dom.codexAccount.value },
+      selection: { ...balancedSelection },
       executionPermission: dom.executionPermission.value });
   });
   dom.prompt.addEventListener("keydown", (event) => {
@@ -415,11 +590,39 @@
   dom.workflowAnswer.addEventListener("input", renderWorkflowPrompt);
   dom.workflowSubmit.addEventListener("click", () => {
     if (!workflowPrompt) return;
+    if (workflowPrompt.kind === "strictPlan") {
+      post({ type: "workflowResponse", id: workflowPrompt.id, decision: "approve",
+        executionPermission: dom.strictPermission.value });
+      return;
+    }
+    if (workflowPrompt.kind === "pause") {
+      post({ type: "workflowResponse", id: workflowPrompt.id, decision: "resume" });
+      return;
+    }
     post({ type: "workflowResponse", id: workflowPrompt.id,
       decision: workflowPrompt.kind === "question" ? "answer" : "confirm", answer: dom.workflowAnswer.value });
   });
+  dom.workflowSecondary.addEventListener("click", () => {
+    if (!workflowPrompt) return;
+    if (workflowPrompt.kind === "pause") post({ type: "workflowResponse", id: workflowPrompt.id, decision: "stop" });
+    else if (workflowPrompt.kind === "strictPlan") post({ type: "workflowResponse", id: workflowPrompt.id, decision: "refuse" });
+  });
+  dom.mode.addEventListener("change", () => { renderModeControls(); renderSettingsDigest(); persistTurnSettings(); });
+  dom.prompt.addEventListener("input", persistUi);
   dom.workflowCancel.addEventListener("click", () => {
     if (workflowPrompt) post({ type: "workflowResponse", id: workflowPrompt.id, decision: "cancel" });
   });
+  if (savedUi?.turnSettings) {
+    applyTurnSettings(savedUi.turnSettings);
+    if (typeof savedUi.draft === "string") dom.prompt.value = savedUi.draft.slice(0, 100_000);
+    if (savedUi.settingsOpen) setSettingsOpen(true);
+    if (savedUi.searchOpen) setSearchOpen(true);
+  }
+  document.addEventListener?.("visibilitychange", () => {
+    if (!document.hidden) post({ type: "ready" });
+    else persistUi();
+  });
   post({ type: "ready" });
+  post({ type: "refresh" });
+  setInterval(() => { if (busy) renderLiveStatus(); }, 1_000);
 })();
