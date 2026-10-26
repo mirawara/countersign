@@ -10,7 +10,8 @@ import { AgentRequest } from "../shared/types";
 export type WorkflowPermissionPrompt = (tool: string, detail: string, signal: AbortSignal) => Promise<boolean>;
 
 export async function runClaudeSdkExecution(config: OrchestratorConfig, request: AgentRequest, prompt: string,
-  schema: Record<string, unknown>, askPermission: WorkflowPermissionPrompt, configDir?: string): Promise<string> {
+  schema: Record<string, unknown>, askPermission: WorkflowPermissionPrompt, configDir?: string,
+  unlimited = false): Promise<string> {
   const gate = await loadClaudeChatGate();
   const sdk = await sdkVersion();
   if (sdk !== VERIFIED_CLAUDE_CHAT_SDK || !chatGateMatches(gate, VERIFIED_CLAUDE_CHAT_CLI, sdk)) {
@@ -21,7 +22,7 @@ export async function runClaudeSdkExecution(config: OrchestratorConfig, request:
   const onAbort = (): void => controller.abort();
   request.signal.addEventListener("abort", onAbort, { once: true });
   if (request.signal.aborted) controller.abort();
-  const timer = setTimeout(() => controller.abort(), config.providerTimeoutMinutes * 60_000);
+  const timer = unlimited ? undefined : setTimeout(() => controller.abort(), config.providerTimeoutMinutes * 60_000);
   const active = query({ prompt, options: {
     cwd: request.repository,
     pathToClaudeCodeExecutable: config.claudeExecutable,
@@ -39,7 +40,7 @@ export async function runClaudeSdkExecution(config: OrchestratorConfig, request:
     outputFormat: { type: "json_schema", schema },
     ...(config.claudeModel ? { model: config.claudeModel } : {}),
     ...(config.claudeEffort ? { effort: config.claudeEffort as "low" | "medium" | "high" | "max" } : {}),
-    maxTurns: 30, abortController: controller,
+    ...(unlimited ? {} : { maxTurns: 30 }), abortController: controller,
   } });
   let result: string | undefined;
   let subscriptionConfirmed = false;
@@ -61,7 +62,7 @@ export async function runClaudeSdkExecution(config: OrchestratorConfig, request:
     if (!subscriptionConfirmed || !result) throw new ClaudeProviderError("execution", "Claude SDK ended without a verified subscription result.");
     return result;
   } finally {
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
     request.signal.removeEventListener("abort", onAbort);
     active.close();
   }

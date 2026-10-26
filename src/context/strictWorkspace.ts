@@ -9,7 +9,7 @@ import {
 import { STRICT_SCAN_CAPS, StrictLimitBreach, StrictLimits } from "../shared/strictLimits";
 import { strictBaselineDigest, strictSnapshotDigest } from "../orchestrator/strictSnapshot";
 import { ProcessFailure } from "../shared/process";
-import { readStrictGit, StrictGitReading } from "./strictGit";
+import { readStrictGit, readStrictGitBaselineFile, StrictGitReading } from "./strictGit";
 import { classifyStrictDirectory, classifyStrictPath } from "./pathPolicy";
 import { buildFilePatch } from "./workspaceChanges";
 
@@ -51,6 +51,10 @@ export interface StrictWorkspace {
    * present, or why there is no such list. Read through the pinned root.
    */
   readonly startingGit: StrictGitReading;
+  /** Exact partial changes verified against the approved baseline before a new provider turn. */
+  readonly resumedChanges: readonly { path: string; status: StrictSnapshotEntry["status"] }[];
+  /** The partial snapshot observed when the approved baseline was reconstructed. */
+  readonly resumedSnapshotDigest?: string;
   /** Releases the pinned root descriptor; the workspace cannot be captured afterwards. */
   close(): Promise<void>;
   capture(signal?: AbortSignal): Promise<StrictCaptureResult>;
@@ -124,6 +128,7 @@ export async function createStrictWorkspaceChanges(options: {
   folder: string;
   limits: StrictLimits;
   signal?: AbortSignal;
+  resume?: { baselineDigest: string; baselineHead?: string; preExistingEntries: readonly string[] };
   /**
    * Overrides the per-scan diff-content pool. It exists so the exhaustion path can be
    * exercised without writing the real ceiling to disk; nothing in the product sets it,
@@ -170,7 +175,7 @@ export async function createStrictWorkspaceChanges(options: {
    * redirect the scan. The path is still compared with the pinned identity, so a root
    * replaced between captures is reported instead of being scanned from the old inode.
    */
-  const scanPinnedRoot = async (signal?: AbortSignal): Promise<StrictScan> => {
+  const scanPinnedRoot = async (signal?: AbortSignal, legacyPythonBytecode = false): Promise<StrictScan> => {
     const current = await lstat(root).catch(() => undefined);
     if (!current || current.ino !== rootIdentity.ino || current.dev !== rootIdentity.dev) {
       throw new StrictScanError({
@@ -178,17 +183,75 @@ export async function createStrictWorkspaceChanges(options: {
         message: "The workspace root is no longer the directory the baseline was taken from.",
       });
     }
-    return scanStrictWorkspace(pinnedRoot, rootIdentity, signal, options.contentBudgetBytes);
+    return scanStrictWorkspace(pinnedRoot, rootIdentity, signal, options.contentBudgetBytes, legacyPythonBytecode);
   };
 
   // The descriptor belongs to this function until a workspace is handed back; every other
   // exit, including a cancellation raised while Git is read, closes it.
   let owned = true;
   try {
-    const baseline = await scanPinnedRoot(options.signal);
+    const current = await scanPinnedRoot(options.signal, Boolean(options.resume));
     if (options.signal?.aborted) return { ok: false, failure: cancelledScanFailure() };
     const git = await readStrictGit(pinnedRoot, rootIdentity, options.signal);
     if (options.signal?.aborted) return { ok: false, failure: cancelledScanFailure() };
+    const resumedChanges: { path: string; status: StrictSnapshotEntry["status"] }[] = [];
+    const baseline: StrictScan = options.resume
+      ? { ...current, included: new Map(current.included), unsupported: new Map(current.unsupported) }
+      : current;
+    if (options.resume) {
+      if (git.kind !== "repository" || !options.resume.baselineHead || git.head !== options.resume.baselineHead) throw new StrictScanError({
+        code: "workspace_changed", message: "Git HEAD no longer matches the approved baseline; partial work cannot be identified safely.",
+      });
+      const previous = new Set(options.resume.preExistingEntries);
+      for (const entry of git.dirtyEntries) {
+        if (previous.has(entry)) continue;
+        const path = entry.slice(3);
+        if (entry.length < 4 || !path || path.includes(" -> ") || baseline.unsupported.has(path)) throw new StrictScanError({
+          code: "workspace_changed", message: "A partial path cannot be reviewed safely.",
+        });
+        if (entry.startsWith("?? ")) {
+          if (!baseline.included.has(path)) throw new StrictScanError({
+            code: "workspace_changed", message: "An untracked partial path is not in the Strict scan.",
+          });
+          baseline.included.delete(path);
+          resumedChanges.push({ path, status: "added" });
+          continue;
+        }
+        const original = await readStrictGitBaselineFile(pinnedRoot, options.resume.baselineHead, path, options.signal);
+        if (!original) {
+          if (!baseline.included.has(path)) throw new StrictScanError({
+            code: "workspace_changed", message: "A newly tracked partial path is not in the Strict scan.",
+          });
+          baseline.included.delete(path);
+          resumedChanges.push({ path, status: "added" });
+          continue;
+        }
+        const originalContent = original.content;
+        const originalSize = originalContent.byteLength;
+        baseline.included.set(path, {
+          kind: "file", size: originalSize, mtimeMs: 0, mode: original.mode,
+          hash: createHash("sha256").update(originalContent).digest("hex"),
+          ...(originalSize <= STRICT_SCAN_CAPS.maxFileBytes && !originalContent.includes(0)
+            ? { content: originalContent } : { contentOmitted: "over_file_size_limit" as const }),
+        });
+        resumedChanges.push({ path, status: current.included.has(path) ? "modified" : "deleted" });
+      }
+      // Older approved baselines included Python bytecode. New bytecode generated
+      // beneath a newly added source directory did not exist in that baseline and
+      // does not appear in Git status. Remove only those candidates, then require
+      // the entire reconstructed digest to match the saved approval.
+      const newDirectories = new Set(resumedChanges.filter((change) => change.status === "added")
+        .map((change) => change.path.slice(0, change.path.lastIndexOf("/") + 1)));
+      for (const path of current.included.keys()) {
+        if (isPythonBytecodePath(path) && [...newDirectories].some((directory) => path.startsWith(directory))) {
+          baseline.included.delete(path);
+        }
+      }
+      if (baselineDigestOf(baseline) !== options.resume.baselineDigest) throw new StrictScanError({
+        code: "workspace_changed",
+        message: "The workspace differs from the approved baseline beyond the identified partial changes. Inspect the changes before resuming.",
+      });
+    }
     const identity: StrictBaselineIdentity = {
       root,
       source: "filesystem_scan",
@@ -197,6 +260,11 @@ export async function createStrictWorkspaceChanges(options: {
       entryCount: baseline.included.size + baseline.unsupported.size,
       ...(git.kind === "repository" ? { git: { repository: git.repository, ...(git.head ? { head: git.head } : {}) } } : {}),
     };
+    // Snapshot review uses the new generated-output policy. The old policy is used
+    // only above to prove the historical approved digest before anything is omitted.
+    const reviewBaseline = options.resume ? withoutPythonBytecode(baseline) : baseline;
+    const resumedSnapshotDigest = options.resume
+      ? compareStrict(identity, reviewBaseline, withoutPythonBytecode(current)).record.digest : undefined;
     owned = false;
     return {
       ok: true,
@@ -207,6 +275,8 @@ export async function createStrictWorkspaceChanges(options: {
         identity,
         // Read once, at baseline time, which is exactly when "already present" is defined.
         startingGit: git,
+        resumedChanges,
+        resumedSnapshotDigest,
         capture: async (signal?: AbortSignal): Promise<StrictCaptureResult> => {
           // The descriptor number can be reused once it is closed, so the pinned path
           // would point at whatever took it. A closed workspace captures nothing.
@@ -218,7 +288,7 @@ export async function createStrictWorkspaceChanges(options: {
           }
           try {
             const current = await scanPinnedRoot(signal ?? options.signal);
-            return { ok: true, snapshot: compareStrict(identity, baseline, current) };
+            return { ok: true, snapshot: compareStrict(identity, reviewBaseline, current) };
           } catch (error) {
             return { ok: false, failure: toFailure(error) };
           }
@@ -240,6 +310,7 @@ async function scanStrictWorkspace(
   expectedRoot?: { ino: number; dev: number },
   signal?: AbortSignal,
   contentBudgetBytes = STRICT_SCAN_CAPS.maxRetainedContentBytes,
+  legacyPythonBytecode = false,
 ): Promise<StrictScan> {
   // Every included file is read and hashed in full. The pool below limits only how many of
   // those bytes stay in memory for diffing, so the perimeter's total size never stops a scan.
@@ -328,7 +399,7 @@ async function scanStrictWorkspace(
         // Resolved through the pinned descriptor, never through the directory's own name.
         const entryPath = `${pinned}/${entry.name}`;
         if (entry.isDirectory()) {
-          const directoryPolicy = classifyStrictDirectory(path, entry.name);
+          const directoryPolicy = classifyStrictDirectory(path, entry.name, legacyPythonBytecode);
           if (directoryPolicy.action === "exclude_without_reading") {
             countPolicy(directoryPolicy.rule, path);
             continue;
@@ -341,7 +412,7 @@ async function scanStrictWorkspace(
           continue;
         }
 
-        const policy = classifyStrictPath(path);
+        const policy = classifyStrictPath(path, legacyPythonBytecode);
         if (policy.action === "exclude_without_reading") {
           countPolicy(policy.rule, path);
           continue;
@@ -520,7 +591,6 @@ function compareStrict(
 ): StrictWorkspaceSnapshot {
   const entries: StrictSnapshotEntry[] = [];
   const patches: string[] = [];
-  let diffBytes = 0;
   const paths = [...new Set([...before.included.keys(), ...after.included.keys()])].sort();
 
   const changed = paths.filter((path) => differs(before.included.get(path), after.included.get(path)));
@@ -543,17 +613,6 @@ function compareStrict(
     entries.push(entry);
     if (reason !== undefined) continue;
     const patch = buildFilePatch(path, old?.content, current?.content);
-    diffBytes += Buffer.byteLength(patch, "utf8") + (patches.length ? 1 : 0);
-    if (diffBytes > STRICT_SCAN_CAPS.maxDiffBytes) {
-      throw new StrictScanError({
-        code: "limit_reached",
-        message: `The reviewable diff exceeds ${STRICT_SCAN_CAPS.maxDiffBytes} bytes. Narrow the task.`,
-        limit: {
-          limit: "scan.maxDiffBytes", phase: "implementation", unit: "bytes",
-          configured: STRICT_SCAN_CAPS.maxDiffBytes, observed: diffBytes,
-        },
-      });
-    }
     patches.push(patch);
   }
 
@@ -628,7 +687,6 @@ function unreviewableReason(before: StrictFileState | undefined, after: StrictFi
     if (!state.content) return state.contentOmitted ?? "content_not_retained";
     if (!isUtf8Text(state.content)) return "binary_without_supported_review";
   }
-  if (!before && after && after.size > STRICT_SCAN_CAPS.maxNewFileBytes) return "new_file_over_limit";
   return undefined;
 }
 
@@ -640,6 +698,28 @@ function isUtf8Text(content: Buffer): boolean {
   } catch {
     return false;
   }
+}
+
+function isPythonBytecodePath(path: string): boolean {
+  return path.split("/").some((part) => part.toLowerCase() === "__pycache__") || /\.(?:pyc|pyo)$/i.test(path);
+}
+
+/** Applies the current generated-output policy to a scan made with the old policy. */
+function withoutPythonBytecode(scan: StrictScan): StrictScan {
+  const included = new Map(scan.included);
+  const unsupported = new Map(scan.unsupported);
+  const policy = new Map(scan.policy);
+  let count = 0;
+  let root = "";
+  for (const path of new Set([...included.keys(), ...unsupported.keys()])) {
+    if (!isPythonBytecodePath(path)) continue;
+    included.delete(path);
+    unsupported.delete(path);
+    count += 1;
+    root ||= path;
+  }
+  if (count > 0) policy.set("python-bytecode-resume", { roots: new Set([root]), count });
+  return { ...scan, included, unsupported, policy };
 }
 
 function baselineDigestOf(scan: StrictScan): string {

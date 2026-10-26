@@ -131,10 +131,10 @@ export function runExecutable(
 
     options.signal?.addEventListener("abort", onAbort, { once: true });
     if (options.signal?.aborted) onAbort();
-    const timeout = setTimeout(() => {
+    const timeout = options.timeoutMs > 0 ? setTimeout(() => {
       failAndTerminate(new ProcessFailure("timed_out", `Process exceeded ${options.timeoutMs} ms.`, stdout, stderr));
-    }, options.timeoutMs);
-    timeout.unref();
+    }, options.timeoutMs) : undefined;
+    timeout?.unref();
     child.stdout.on("data", (chunk: Buffer) => append(chunk, stdoutDecoder, "stdout"));
     child.stderr.on("data", (chunk: Buffer) => append(chunk, stderrDecoder, "stderr"));
     child.stdout.once("end", flushStdout);

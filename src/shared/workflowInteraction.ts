@@ -1,5 +1,18 @@
 import { ExecutionPermission, WorkflowModelSelection, WorkflowProviderSelection } from "../configuration/config";
 import { WorkflowEvent } from "./types";
+import { StrictConsensus, StrictHumanApproval, StrictPlan } from "./strict";
+
+/** An interrupted approved phase B may reuse approval only after reconstructing its exact baseline. */
+export interface StrictApprovedContinuation {
+  plan: StrictPlan;
+  planHash: string;
+  baselineDigest: string;
+  baselineHead?: string;
+  consensus: StrictConsensus;
+  humanApproval: StrictHumanApproval;
+  /** Git entries already present when the approved baseline was captured. */
+  preExistingEntries?: string[];
+}
 
 /** CLI-owned profile directories selected before a task starts. No credentials cross this boundary. */
 export interface WorkflowAccountSelection {
@@ -41,6 +54,9 @@ export interface StrictPlanApprovalAnswer {
 
 export interface StrictWorkflowStartRequest {
   task: string;
+  /** An earlier draft to evaluate afresh; it never carries approvals or permission. */
+  continuedPlan?: StrictPlan;
+  approvedContinuation?: StrictApprovedContinuation;
   accounts?: WorkflowAccountSelection;
   selection?: WorkflowModelSelection;
   executionPermission: ExecutionPermission;

@@ -147,7 +147,10 @@ export interface CheckResult {
 export interface ProviderMetric {
   provider: string;
   estimatedCostUsd?: number;
+  /** Claude's input_tokens excludes both kinds of cached input. */
   inputTokens?: number;
+  cacheReadInputTokens?: number;
+  cacheCreationInputTokens?: number;
   outputTokens?: number;
 }
 

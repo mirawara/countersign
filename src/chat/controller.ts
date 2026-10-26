@@ -18,8 +18,9 @@ import { ExecutionPermission, WorkflowModelSelection, WorkflowProviderSelection 
 import {
   StrictPlanApprovalAnswer, StrictPlanPromptData, StrictWorkflowStartRequest, WorkflowStartRequest,
   WorkflowAccountSelection,
+  StrictApprovedContinuation,
 } from "../shared/workflowInteraction";
-import { StrictWorkflowResult } from "../shared/strict";
+import { StrictConsensus, StrictHumanApproval, StrictPlan, StrictWorkflowResult } from "../shared/strict";
 
 interface FileAttachment {
   path: string;
@@ -185,6 +186,9 @@ export class ChatController implements vscode.Disposable {
           break;
         case "openDiff":
           if (typeof raw.messageId === "string") await this.openDiff(raw.messageId);
+          break;
+        case "continueStrict":
+          if (typeof raw.messageId === "string") await this.continueStrict(raw.messageId);
           break;
         case "addFile": await this.addActiveFile(); break;
         case "cancel":
@@ -403,6 +407,8 @@ export class ChatController implements vscode.Disposable {
 
   private async send(raw: Incoming): Promise<void> {
     if (this.activeController) return;
+    const continuation = typeof raw.resumeMessageId === "string"
+      ? this.strictContinuation(raw.resumeMessageId) : undefined;
     if (isRecord(raw.accounts)) {
       for (const provider of ["claude", "codex"] as const) {
         const id = raw.accounts[provider];
@@ -410,7 +416,7 @@ export class ChatController implements vscode.Disposable {
         await this.accounts.select(provider, id);
       }
     }
-    const text = typeof raw.text === "string" ? raw.text.trim() : "";
+    const text = continuation?.displayText ?? (typeof raw.text === "string" ? raw.text.trim() : "");
     if (!text || text.length > 100_000) {
       this.notice = "Enter a task of up to 100,000 characters.";
       this.postState();
@@ -435,7 +441,8 @@ export class ChatController implements vscode.Disposable {
       }
       selection = raw.selection as WorkflowModelSelection;
     }
-    const mode = raw.mode === "strict" ? "strict" : raw.mode === "balanced" ? "balanced" : this.turnSettings.mode;
+    const mode = continuation ? "strict"
+      : raw.mode === "strict" ? "strict" : raw.mode === "balanced" ? "balanced" : this.turnSettings.mode;
     if (mode === "strict" && !this.workflow.startStrict) {
       this.notice = "Strict is not available in this window.";
       this.postState();
@@ -455,12 +462,16 @@ export class ChatController implements vscode.Disposable {
     const incomingAttachment = isRecord(raw.attachment) && raw.attachment.path === this.attachment?.path
       ? this.attachment : undefined;
     this.attachment = undefined;
-    const task = incomingAttachment
+    const task = continuation?.task ?? (incomingAttachment
       ? `${text}\n\nReferenced workspace file: ${incomingAttachment.path}${incomingAttachment.selection
         ? `\nSelected text:\n${incomingAttachment.selection}` : ""}`
-      : text;
+      : text);
     const modeLabel = mode === "strict" ? "Strict" : "Balanced";
-    const accounts = this.accounts.selection();
+    const selectedAccounts = this.accounts.snapshot().selected;
+    const accounts = this.accounts.selection({
+      claude: this.accountEmails.get(`claude:${selectedAccounts.claude}`) ?? undefined,
+      codex: this.accountEmails.get(`codex:${selectedAccounts.codex}`) ?? undefined,
+    });
     const accountLabel = `Claude: ${accounts.claudeLabel}; Codex: ${accounts.codexLabel}`;
     const user: ChatMessage = { id: randomUUID(), role: "user", text, createdAt: new Date().toISOString(),
       modeLabel, accountLabel,
@@ -477,7 +488,8 @@ export class ChatController implements vscode.Disposable {
       this.view.post({ type: "sent" });
       this.postState();
       if (mode === "strict") {
-        await this.runStrict(threadId, replyId, task, selection, accounts, executionPermission, controller.signal);
+        await this.runStrict(threadId, replyId, task, selection, accounts, executionPermission, controller.signal,
+          continuation?.plan, continuation?.approved);
       } else {
         await this.runBalanced(threadId, replyId, task, providers, selection, accounts, executionPermission, controller.signal);
       }
@@ -500,6 +512,122 @@ export class ChatController implements vscode.Disposable {
       this.postState();
       void this.refreshCapabilities();
     }
+  }
+
+  private async continueStrict(messageId: string): Promise<void> {
+    if (this.activeController || this.sending) return;
+    // Resolve before starting a task so a stale, malformed or foreign report never
+    // becomes an instruction to a provider.
+    const continuation = this.strictContinuation(messageId);
+    if (continuation.approved && continuation.quotaStop) {
+      await this.refreshAccountIdentities();
+      const choices = this.accounts.snapshot();
+      const provider = continuation.quotaProvider;
+      const name = provider === "codex" ? "Codex" : "Claude";
+      const options = [
+        ...choices.profiles.filter((profile) => profile.provider === provider && profile.id !== choices.selected[provider])
+          .map((profile) => ({ id: profile.id, label: profile.label, directory: profile.directory })),
+        { id: "default", label: `Current ${name} CLI login`, directory: "Default CLI profile" },
+        ...choices.profiles.filter((profile) => profile.provider === provider && profile.id === choices.selected[provider])
+          .map((profile) => ({ id: profile.id, label: profile.label, directory: profile.directory })),
+      ].filter((option, index, all) => all.findIndex((item) => item.id === option.id) === index);
+      const executable = vscode.workspace.getConfiguration("countersign")
+        .get<string>(provider === "claude" ? "claudeExecutable" : "codexExecutable") || provider;
+      const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+      await Promise.all(options.map(async (option) => {
+          try {
+            const directory = option.id === "default" ? undefined : option.directory;
+            const email = provider === "claude"
+              ? await inspectClaudeAccount(executable, cwd, directory)
+              : await inspectCodexAccount(executable, cwd, directory);
+            this.accountEmails.set(`${provider}:${option.id}`, email ?? null);
+          } catch { this.accountEmails.set(`${provider}:${option.id}`, null); }
+        }));
+      const picked = await vscode.window.showQuickPick([...options.map((option) => ({
+        label: option.label,
+        description: this.accountEmails.get(`${provider}:${option.id}`) ||
+          (option.id === choices.selected[provider] ? this.capabilities.get(provider)?.accountEmail : undefined) ||
+          "Email unavailable",
+        detail: option.directory,
+        id: option.id,
+      })), { id: "__add__", label: `Add or sign in to another ${name} account`,
+        description: "Import a CLI profile or open the official login" }],
+      { title: `Choose the ${name} account for the approved Strict plan`,
+        placeHolder: "The workspace must still match the approved baseline" });
+      if (!picked) return;
+      if (picked.id === "__add__") {
+        await this.addAccount(provider);
+        this.notice = `Finish the ${name} login if needed, then use Change account and resume again.`;
+        this.postState();
+        return;
+      }
+      await this.accounts.select(provider, picked.id);
+      this.clearAccountCapability(provider);
+      this.postState();
+    }
+    this.view.reveal();
+    await this.onMessage({ type: "send", resumeMessageId: messageId, mode: "strict",
+      selection: this.turnSettings.selection,
+      executionPermission: continuation.approved?.humanApproval.executionPermission ??
+        this.turnSettings.executionPermission });
+  }
+
+  private strictContinuation(messageId: string): {
+    displayText: string; task: string; plan?: StrictPlan;
+    approved?: StrictApprovedContinuation; quotaProvider: AccountProvider; quotaStop: boolean;
+  } {
+    const thread = this.store.activeThread();
+    const index = thread.messages.findIndex((message) => message.id === messageId);
+    const report = thread.messages[index];
+    if (!report || report.modeLabel !== "Strict report" || !report.text.includes("Strict workflow report")) {
+      throw new Error("Choose a Strict report in this conversation.");
+    }
+    if (/^Status: completed_clean$/m.test(report.text)) {
+      throw new Error("That Strict task already completed cleanly.");
+    }
+    const repository = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const reportedRepository = report.strictContinuation?.repository ?? report.text.match(/^Workspace: (.+)$/m)?.[1];
+    if (!repository || repository !== reportedRepository) {
+      throw new Error("Open the workspace named in this Strict report before continuing.");
+    }
+    const saved = report.strictContinuation;
+    const quotaStop = /^Reason: quota_exhausted\b/m.test(report.text);
+    const timedOut = /^Reason: timed_out\b/m.test(report.text);
+    const quotaProvider: AccountProvider = /^Reason: quota_exhausted — Codex\b/m.test(report.text)
+      ? "codex" : "claude";
+    if (saved) {
+      const approval = saved.baselineDigest && (quotaStop || timedOut)
+        ? saved.approved ?? legacyApprovedContinuation(report.text, saved.planHash) : undefined;
+      const approved: StrictApprovedContinuation | undefined = approval && saved.baselineDigest
+        ? { plan: saved.plan, planHash: saved.planHash, baselineDigest: saved.baselineDigest,
+          baselineHead: saved.baselineHead ?? reportBaselineHead(report.text),
+          consensus: approval.consensus, humanApproval: approval.humanApproval,
+          preExistingEntries: saved.preExistingEntries ?? reportPreExistingEntries(report.text) } : undefined;
+      return {
+        displayText: approved
+          ? `Resume approved Strict plan ${saved.planHash.slice(0, 12)}…${quotaStop ? ` with another ${quotaProvider === "codex" ? "Codex" : "Claude"} account` : " after the interrupted provider turn"}. Strict verifies any partial files against the approved baseline before a provider call.\n\nOriginal task:\n${saved.task}`
+          : `Continue the saved Strict draft ${saved.planHash.slice(0, 12)}… in a new task. Claude and Codex must approve it again before implementation.\n\nOriginal task:\n${saved.task}`,
+        task: saved.task,
+        plan: saved.plan,
+        approved,
+        quotaProvider,
+        quotaStop,
+      };
+    }
+    // Reports made before this feature have only the human-readable last draft.
+    // Re-use it as context for a fresh proposal; never invent missing structured
+    // fields or claim to resume its old hash or approvals.
+    const previousUser = thread.messages.slice(0, index).reverse()
+      .find((message) => message.role === "user" && message.modeLabel === "Strict")?.text;
+    const originalTask = previousUser ?? report.text.match(/^Task: (.+)$/m)?.[1];
+    const history = report.text.split("## Plan history\n")[1]?.split("\n## Plan consensus")[0] ?? "";
+    const revisions = [...history.matchAll(/(?:^|\n)\d+\. (?:initial|continued|provider_revision|human_revision) at /g)];
+    const lastDraft = revisions.length > 0 ? history.slice(revisions.at(-1)!.index).trim().slice(0, 15_000) : "";
+    if (!originalTask || !lastDraft) {
+      throw new Error("This older report has no reusable plan draft. Start a new Strict task with its objective.");
+    }
+    const task = `${originalTask.slice(0, 70_000)}\n\nPrevious Strict draft (context only; not approved or complete):\n${lastDraft}\n\nReinspect the current workspace. Correct outdated paths and names in that draft before proposing a new canonical plan. Do not treat any previous approval as valid.`;
+    return { displayText: task, task, quotaProvider, quotaStop };
   }
 
   private async runBalanced(threadId: string, replyId: string, task: string,
@@ -556,12 +684,14 @@ export class ChatController implements vscode.Disposable {
 
   /**
    * One Strict task driven from the sidebar. The plan, the consensus, the questions, the
-   * limits and pauses are all visible in the chat; nothing resumes after a restart.
+   * limits and pauses are all visible in the chat. A stopped provider session never
+   * resumes; a saved approved plan can start a fresh phase B on an identical baseline.
    */
   private async runStrict(threadId: string, replyId: string, task: string,
     selection: WorkflowModelSelection | undefined, accounts: WorkflowAccountSelection,
     executionPermission: ExecutionPermission,
-    signal: AbortSignal): Promise<void> {
+    signal: AbortSignal, continuedPlan?: StrictPlan,
+    approvedContinuation?: StrictApprovedContinuation): Promise<void> {
     const startStrict = this.workflow.startStrict;
     if (!startStrict) throw new Error("Strict is not available in this window.");
     const activity: string[] = [];
@@ -570,6 +700,8 @@ export class ChatController implements vscode.Disposable {
     try {
       const result = await startStrict({
         task,
+        continuedPlan: approvedContinuation ? undefined : continuedPlan,
+        approvedContinuation,
         selection,
         accounts,
         executionPermission,
@@ -595,6 +727,8 @@ export class ChatController implements vscode.Disposable {
       await this.store.updateMessage(threadId, replyId, {
         text: stoppedBeforeAgents
           ? `Strict could not start: ${result.reason?.message ?? result.message}\n\n${result.reason?.nextAction ?? "Check the workspace and try again."}\n\nNo provider was contacted. Strict changed no workspace files.`
+          : (result.reason?.code === "quota_exhausted" || result.reason?.code === "timed_out") && result.humanApproval?.approved
+          ? `The approved plan stopped during implementation: ${result.reason.message}\n\nUse “Resume approved work” on the report below. Strict verifies partial files before it runs.`
           : `Strict task finished: ${result.state}. ${result.reason ? result.reason.message : result.message}`,
         provider: "claude",
       });
@@ -604,6 +738,18 @@ export class ChatController implements vscode.Disposable {
         createdAt: new Date().toISOString(), provider: "claude", modeLabel: "Strict report",
         accountLabel: `Claude: ${accounts.claudeLabel}; Codex: ${accounts.codexLabel}`, status: "completed",
         fileRefs: result.snapshots.at(-1)?.entries.slice(0, 20).map((entry) => entry.path) ?? [],
+        strictContinuation: result.plans.length && result.state !== "completed_clean"
+          ? { repository: result.repository, task: result.task, baselineDigest: result.baseline?.digest,
+            baselineHead: result.baseline?.git?.head,
+            planHash: result.plans.at(-1)!.hash, plan: result.plans.at(-1)!.plan,
+            preExistingEntries: result.preExistingEntries,
+            ...((result.reason?.code === "quota_exhausted" || result.reason?.code === "timed_out") && result.budget.implementation.providerRequests > 0 &&
+              result.humanApproval?.approved && result.planConsensus?.reachedAt &&
+              result.planConsensus.approvals.some((approval) => approval.provider === "claude" && approval.decision === "approve") &&
+              result.planConsensus.approvals.some((approval) => approval.provider === "codex" && approval.decision === "approve")
+              ? { approved: { consensus: result.planConsensus,
+                humanApproval: result.humanApproval } } : {}) }
+          : undefined,
       });
       this.postState();
       if (result.state !== "completed_clean") {
@@ -950,6 +1096,41 @@ function accountProvider(value: unknown): value is AccountProvider {
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+/** Recover the approved gate from reports created before it was stored as structured data. */
+function legacyApprovedContinuation(report: string, hash: string):
+  { consensus: StrictConsensus; humanApproval: StrictHumanApproval } | undefined {
+  const consensusText = report.split("## Plan consensus\n")[1]?.split("\n## ")[0];
+  const humanText = report.split("## Human approval\n")[1]?.split("\n## ")[0];
+  if (!consensusText || !humanText || !/^Reason: (?:quota_exhausted|timed_out)\b/m.test(report) ||
+      !/^- Phase B: [1-9]\d* provider request\(s\)/m.test(report)) return undefined;
+  const reached = consensusText.match(/^Hash under evaluation: ([0-9a-f]{64})\. Both providers approved this exact hash at ([^\n.]+(?:\.[0-9]+)?Z)\.$/m);
+  const human = humanText.match(/^Approved at ([^\n ]+) on plan hash ([0-9a-f]{64}); permission (askBeforeChange|fullAccess)\.$/m);
+  if (!reached || reached[1] !== hash || !human || human[2] !== hash) return undefined;
+  const approvals = (["claude", "codex"] as const).map((provider) => {
+    const match = consensusText.match(new RegExp(`^- ${provider}: approve on ([0-9a-f]{64}) at ([^\\n ]+)`, "m"));
+    return match?.[1] === hash ? { provider, subject: "plan" as const, hash,
+      decision: "approve" as const, decidedAt: match[2] } : undefined;
+  });
+  if (approvals.some((approval) => !approval)) return undefined;
+  return {
+    // Older reports could carry objections from a replaced plan even after both
+    // providers approved the final hash. They are not objections to this hash.
+    consensus: { subject: "plan", hash, reachedAt: reached[2],
+      approvals: approvals as StrictConsensus["approvals"], openObjections: [] },
+    humanApproval: { approved: true, planHash: hash, decidedAt: human[1],
+      executionPermission: human[3] as StrictHumanApproval["executionPermission"] },
+  };
+}
+
+function reportPreExistingEntries(report: string): string[] {
+  const section = report.split("## Changes already present before this task\n")[1]?.split("\n## ")[0] ?? "";
+  return section.split("\n").filter((line) => line.startsWith("- ")).map((line) => line.slice(2));
+}
+
+function reportBaselineHead(report: string): string | undefined {
+  return report.match(/\bGit repository [^\n;]+ at HEAD ([0-9a-f]{40,64});/)?.[1];
 }
 
 /** Reads a Strict approval from the webview, refusing anything outside the allowed range. */

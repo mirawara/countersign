@@ -89,6 +89,22 @@ export const PATH_POLICY_RULES: readonly PathPolicyRule[] = [
     balanced: "strict_only",
   },
   {
+    id: "python-bytecode-directories",
+    category: "policy",
+    description: "Generated Python bytecode directories",
+    matcher: { kind: "directory_component", names: ["__pycache__"] },
+    strict: "exclude_without_reading",
+    balanced: "strict_only",
+  },
+  {
+    id: "python-bytecode-files",
+    category: "policy",
+    description: "Generated Python bytecode files",
+    matcher: { kind: "basename_regex", pattern: /\.(?:pyc|pyo)$/i },
+    strict: "exclude_without_reading",
+    balanced: "strict_only",
+  },
+  {
     id: "credential-directories",
     category: "included",
     description: ".ssh, .aws and .gnupg",
@@ -153,8 +169,9 @@ const INCLUDED: StrictPathClassification = { category: "included", action: "scan
  * Classifies a workspace-relative path for the Strict scanner. internal/ and every other
  * unlisted path is included and reviewed, even when Git ignores it.
  */
-export function classifyStrictPath(path: string): StrictPathClassification {
+export function classifyStrictPath(path: string, legacyPythonBytecode = false): StrictPathClassification {
   for (const rule of PATH_POLICY_RULES) {
+    if (legacyPythonBytecode && rule.id.startsWith("python-bytecode-")) continue;
     if (matches(rule.matcher, path)) {
       return { category: rule.category, action: rule.strict, rule: rule.id };
     }
@@ -163,8 +180,9 @@ export function classifyStrictPath(path: string): StrictPathClassification {
 }
 
 /** True when the Strict scanner must not descend into this directory or read it. */
-export function classifyStrictDirectory(path: string, name: string): StrictPathClassification {
+export function classifyStrictDirectory(path: string, name: string, legacyPythonBytecode = false): StrictPathClassification {
   for (const rule of PATH_POLICY_RULES) {
+    if (legacyPythonBytecode && rule.id.startsWith("python-bytecode-")) continue;
     if (rule.matcher.kind === "directory_component" && containsName(rule.matcher.names, name)) {
       return { category: rule.category, action: rule.strict, rule: rule.id };
     }

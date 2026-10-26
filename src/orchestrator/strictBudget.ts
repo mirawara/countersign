@@ -20,8 +20,7 @@ export class StrictLimitReachedError extends Error {
 }
 
 /**
- * The time ceiling is the operating limit and the request ceiling is an independent
- * backstop, not a promise that every request may be spent. Active time accrues only
+ * Active time accrues only
  * while the task works: it stops for a human approval, for an unanswered question and
  * for a pause. Calendar time keeps running and is reported, never spent.
  */
@@ -63,6 +62,7 @@ export class StrictBudgetTracker {
   }
 
   remainingActiveMs(): number {
+    if (this.phaseLimits().maxActiveMinutes === 0) return Number.POSITIVE_INFINITY;
     return Math.max(0, this.maxActiveMs - this.activeMs);
   }
 
@@ -86,7 +86,7 @@ export class StrictBudgetTracker {
   /** Counts one provider request, retries included, before it is sent. */
   countProviderRequest(): void {
     const max = this.phaseLimits().maxProviderRequests;
-    if (this.providerRequests >= max) {
+    if (max > 0 && this.providerRequests >= max) {
       throw new StrictLimitReachedError({
         limit: this.limitId("maxProviderRequests"),
         phase: this.phase,
@@ -104,11 +104,11 @@ export class StrictBudgetTracker {
   }
 
   /**
-   * A single request may never extend the phase: its deadline is the smaller of the
-   * per-request timeout and the active time still left.
+   * A zero timeout means the request runs until it completes or is cancelled.
    */
   requestTimeoutMs(): number {
     this.assertActiveTimeRemaining();
+    if (this.limits.providerRequestTimeoutMinutes === 0) return 0;
     return Math.min(this.limits.providerRequestTimeoutMinutes * 60_000, this.remainingActiveMs());
   }
 

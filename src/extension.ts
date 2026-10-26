@@ -170,6 +170,8 @@ export class ExtensionRuntime {
       const taskPromise = runStrictTask({
         repository,
         task: request.task,
+        continuedPlan: request.continuedPlan,
+        approvedContinuation: request.approvedContinuation,
         localChecks: config.localChecks,
         limitOverrides: {},
         planningClaude: claude,

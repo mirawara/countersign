@@ -1,10 +1,9 @@
 import type { StrictPhase } from "./strict";
 
 /**
- * Strict ceilings. Every number below is an arbitrary placeholder: roadmap item 4
- * (daily use and measurement) was skipped by an explicit product decision, so no
- * value here is derived from measured runs. They are per-task configurable,
- * frozen once a task starts, and never absent.
+ * Strict technical bounds. Zero in the legacy time/request/cycle fields means that
+ * the workflow has no automatic stop for that dimension. The old fields remain in
+ * the result shape so saved reports and internal callers can still be read.
  */
 export interface StrictPlanPhaseLimits {
   maxProviderRequests: number;
@@ -92,24 +91,23 @@ export interface StrictLimitRange {
 }
 
 export const STRICT_LIMIT_DEFAULTS: StrictLimits = Object.freeze({
-  // Eight requests at up to ten minutes each must fit without the phase ceiling
-  // silently shortening a later consensus or schema-repair request.
-  planPhase: Object.freeze({ maxProviderRequests: 8, maxActiveMinutes: 80 }),
+  // No automatic time, request or review-cycle stop in the interactive workflow.
+  planPhase: Object.freeze({ maxProviderRequests: 0, maxActiveMinutes: 0 }),
   implementationPhase: Object.freeze({
-    maxProviderRequests: 18,
-    maxActiveMinutes: 90,
-    maxReviewCycles: 6,
+    maxProviderRequests: 0,
+    maxActiveMinutes: 0,
+    maxReviewCycles: 0,
     stallCycles: 2,
   }),
-  providerRequestTimeoutMinutes: 10,
+  providerRequestTimeoutMinutes: 0,
   maxStructuredRetries: 2,
   maxCanonicalPlanBytes: 64 * 1024,
   maxStructuredResponseBytes: 128 * 1024,
 });
 
 /**
- * Per-task bounds. Every bound comes from
- * the Strict specification; the others are bounded here only so no ceiling can be removed.
+ * Legacy override ranges remain for internal callers; the sidebar no longer offers
+ * request/time ceilings and passes no such override.
  */
 export const STRICT_LIMIT_RANGES: Readonly<Record<StrictConfigurableLimitId, StrictLimitRange>> = Object.freeze({
   "planPhase.maxProviderRequests": { min: 1, max: 200, unit: "requests" },

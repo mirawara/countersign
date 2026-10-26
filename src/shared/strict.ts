@@ -71,7 +71,7 @@ export const STRICT_PLAN_CANONICAL_KEYS = [
 
 export const STRICT_PLAN_QUESTION_CANONICAL_KEYS = ["id", "question", "answer"] as const;
 
-export type StrictPlanRevisionSource = "initial" | "provider_revision" | "human_revision";
+export type StrictPlanRevisionSource = "initial" | "continued" | "provider_revision" | "human_revision";
 
 export interface StrictPlanRecord {
   /** Full SHA-256 of the canonical bytes, recomputed locally and never taken from a model. */

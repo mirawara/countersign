@@ -135,8 +135,8 @@ function summarizeStrictWorkflow(result: StrictWorkflowResult): string {
     `Workspace: ${result.repository}`,
     `Started: ${result.startedAt}`,
     `Finished: ${result.finishedAt}`,
-    `Phase A budget: ${result.budget.plan.providerRequests}/${result.limits.planPhase.maxProviderRequests} provider request(s); active ${formatMinutes(result.budget.plan.activeMs)} of ${result.limits.planPhase.maxActiveMinutes} min; calendar ${formatMinutes(result.budget.plan.wallClockMs)}`,
-    `Phase B budget: ${result.budget.implementation.providerRequests}/${result.limits.implementationPhase.maxProviderRequests} provider request(s); ${result.budget.implementation.reviewCycles ?? 0}/${result.limits.implementationPhase.maxReviewCycles} review cycle(s); active ${formatMinutes(result.budget.implementation.activeMs)} of ${result.limits.implementationPhase.maxActiveMinutes} min; calendar ${formatMinutes(result.budget.implementation.wallClockMs)}`,
+    `Phase A: ${result.budget.plan.providerRequests} provider request(s); active ${formatMinutes(result.budget.plan.activeMs)}; calendar ${formatMinutes(result.budget.plan.wallClockMs)}`,
+    `Phase B: ${result.budget.implementation.providerRequests} provider request(s); ${result.budget.implementation.reviewCycles ?? 0} review cycle(s); active ${formatMinutes(result.budget.implementation.activeMs)}; calendar ${formatMinutes(result.budget.implementation.wallClockMs)}`,
     `Plan revisions: ${result.plans.length}; agreed plan hash: ${result.planConsensus?.reachedAt ? result.planConsensus.hash : "none"}`,
     `Human approval: ${result.humanApproval ? (result.humanApproval.approved ? `approved (${result.humanApproval.executionPermission})` : "refused") : "not requested"}`,
     `Reviewed snapshots: ${result.snapshots.length}; final digest: ${result.snapshots.at(-1)?.digest ?? "none"}`,
@@ -149,7 +149,7 @@ function summarizeStrictWorkflow(result: StrictWorkflowResult): string {
     `Pauses: ${result.pauses.length}`,
     `Strict marker: ${result.marker ? `${result.marker.status}${result.marker.outcome ? ` (${result.marker.outcome})` : ""}${result.marker.clearedByCommand ? ", removed with the command" : ""}` : "not recorded"}`,
     "Result details: available in the Countersign chat report",
-    `Provider metrics: ${result.metrics.length === 0 ? "not reported" : result.metrics.map((entry) => `${entry.provider}: estimated cost ${entry.estimatedCostUsd ?? "unavailable"} USD, input tokens ${entry.inputTokens ?? "unavailable"}, output tokens ${entry.outputTokens ?? "unavailable"}`).join("; ")}`,
+    `Provider metrics: ${result.metrics.length === 0 ? "not reported" : result.metrics.map((entry) => strictProviderUsageLine(entry).slice(2)).join("; ")}`,
   ].join("\n");
 }
 
@@ -175,12 +175,14 @@ function detailedStrictReport(result: StrictWorkflowResult): string {
     result.executionPermission
       ? `After plan approval: ${result.executionPermission === "fullAccess" ? "Full access" : "Ask before change"}. Codex stays read-only in every phase.`
       : "After plan approval: not reached. No execution permission was confirmed for this task.",
+    result.humanApproval?.approved && result.budget.plan.providerRequests === 0 &&
+      result.plans.some((plan) => plan.source === "continued")
+      ? "Continuation: the previously approved plan was reused after the original baseline was verified. New partial files, if any, are included in the reviewed diff. Phase A made no new provider request."
+      : "",
     "",
     "## Limits in force",
-    "These ceilings are arbitrary placeholders. The roadmap measurement phase was skipped by an explicit product decision, so no value below comes from measured runs. The values were frozen when this task started and could not be raised during it.",
-    `- Phase A: ${result.limits.planPhase.maxProviderRequests} provider request(s) including retries; ${result.limits.planPhase.maxActiveMinutes} active minutes`,
-    `- Phase B: ${result.limits.implementationPhase.maxProviderRequests} provider request(s) including retries; ${result.limits.implementationPhase.maxReviewCycles} review cycle(s); ${result.limits.implementationPhase.maxActiveMinutes} active minutes; pause after ${result.limits.implementationPhase.stallCycles} cycle(s) without verifiable progress`,
-    `- Single provider request timeout: ${result.limits.providerRequestTimeoutMinutes} minutes; invalid structured response retries: ${result.limits.maxStructuredRetries}`,
+    "No automatic phase request, active-time, review-cycle or per-provider-request timeout is configured. Cancellation and provider failures still stop a task.",
+    `- No-progress pause after ${result.limits.implementationPhase.stallCycles} cycle(s); invalid structured response retries: ${result.limits.maxStructuredRetries}`,
     `- Canonical plan: ${result.limits.maxCanonicalPlanBytes} bytes; structured response: ${result.limits.maxStructuredResponseBytes} bytes`,
     ...(result.limitBreaches.length
       ? result.limitBreaches.map((breach) => `- Reached: ${breach.limit} — ${breach.observed} of ${breach.configured} ${strictLimitUnit(breach.limit)} in phase ${breach.phase}`)
@@ -307,12 +309,22 @@ function detailedStrictReport(result: StrictWorkflowResult): string {
     "",
     "## Provider usage",
     ...(result.metrics.length
-      ? result.metrics.map((item) => `- ${item.provider}: ${item.inputTokens ?? "?"} input tokens, ${item.outputTokens ?? "?"} output tokens; ${item.estimatedCostUsd ?? "unavailable"} USD API price estimate`)
+      ? result.metrics.map(strictProviderUsageLine)
       : ["Usage was not reported."]),
     "",
     "A clean Strict completion requires all of: provider agreement on one plan hash, human approval, configured checks passing on the last snapshot, no open blocking finding, explicit Codex and Claude approvals of the same final digest, a stable baseline, and no unreviewable change. Changes confined to the policy-excluded paths listed above are expected and block nothing; they never enter the digest. USD figures are provider estimates, not subscription charges.",
   ];
   return lines.filter((line) => line !== undefined).join("\n").slice(0, 98_000);
+}
+
+function strictProviderUsageLine(item: StrictWorkflowResult["metrics"][number]): string {
+  const totalInput = item.inputTokens !== undefined && item.cacheReadInputTokens !== undefined &&
+    item.cacheCreationInputTokens !== undefined
+    ? item.inputTokens + item.cacheReadInputTokens + item.cacheCreationInputTokens : undefined;
+  const input = item.provider.startsWith("claude")
+    ? `${totalInput ?? "?"} total input tokens (${item.inputTokens ?? "?"} uncached, ${item.cacheReadInputTokens ?? "?"} cache read, ${item.cacheCreationInputTokens ?? "?"} cache write)`
+    : `${item.inputTokens ?? "?"} input tokens`;
+  return `- ${item.provider}: ${input}; ${item.outputTokens ?? "?"} output tokens; ${item.estimatedCostUsd ?? "unavailable"} USD API price estimate`;
 }
 
 /**

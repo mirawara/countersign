@@ -14,11 +14,11 @@ export async function withDeadline<T>(
   if (outer.aborted) controller.abort();
   else outer.addEventListener("abort", onAbort, { once: true });
   let timedOut = false;
-  const timer = setTimeout(() => {
+  const timer = timeoutMs > 0 ? setTimeout(() => {
     timedOut = true;
     controller.abort();
-  }, timeoutMs);
-  if (typeof timer.unref === "function") timer.unref();
+  }, timeoutMs) : undefined;
+  timer?.unref();
   try {
     return await Promise.race([operation(controller.signal), rejectOnAbort(controller.signal)]);
   } catch (error) {
@@ -26,7 +26,7 @@ export async function withDeadline<T>(
     if (timedOut) throw new StrictProviderError("timed_out", `A provider request exceeded ${Math.round(timeoutMs / 1_000)} seconds.`);
     throw error;
   } finally {
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
     outer.removeEventListener("abort", onAbort);
   }
 }

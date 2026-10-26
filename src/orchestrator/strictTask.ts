@@ -7,6 +7,7 @@ import {
 } from "../shared/strict";
 import { StrictLimitOverrides, StrictLimits, resolveStrictLimits } from "../shared/strictLimits";
 import { StrictMarkerStore } from "../shared/strictMarker";
+import { StrictApprovedContinuation } from "../shared/workflowInteraction";
 import { CheckResult, LocalCheck, StrictWorkflowEvent } from "../shared/types";
 import { WorkflowModelSelection } from "../configuration/config";
 import { acquireRepositoryLock } from "../shared/repositoryLock";
@@ -14,7 +15,8 @@ import { StrictClock, systemStrictClock } from "./strictBudget";
 import {
   runStrictImplementationPhase, StrictLifecycleMarker, StrictPauseGate,
 } from "./strictImplementationPhase";
-import { runStrictPlanPhase, StrictPlanHumanGate } from "./strictPlanPhase";
+import { runStrictPlanPhase, StrictPlanHumanGate, StrictPlanPhaseSuccess } from "./strictPlanPhase";
+import { canonicalizeStrictPlan, validateStrictPlan } from "./strictPlanHash";
 import {
   StrictBaselineError, StrictBaselineGuard, StrictImplementationProvider, StrictPlanningProvider, StrictReviewProvider,
 } from "./strictProviders";
@@ -22,6 +24,9 @@ import {
 export interface StrictTaskInput {
   repository: string;
   task: string;
+  /** A saved draft, never an approval: phase A re-evaluates it against a new baseline. */
+  continuedPlan?: import("../shared/strict").StrictPlan;
+  approvedContinuation?: StrictApprovedContinuation;
   localChecks: LocalCheck[];
   declaredGeneratedOutputs?: string[];
   limitOverrides?: StrictLimitOverrides;
@@ -44,8 +49,9 @@ const EMPTY_PHASE_BUDGET: StrictPhaseBudget = { providerRequests: 0, activeMs: 0
 
 /**
  * One Strict task: phase A, then phase B, then one report. The repository lock and the
- * lifecycle marker are held around both phases. Nothing here persists resumable state:
- * after a restart the task is gone and the user starts a new one against a new baseline.
+ * lifecycle marker are held around both phases. Provider sessions are not resumed after
+ * a stop. An interrupted phase B may use a saved approval only when Git's immutable
+ * HEAD blobs and the new scan reconstruct the exact baseline that approval covered.
  */
 export async function runStrictTask(input: StrictTaskInput): Promise<StrictWorkflowResult> {
   const clock = input.clock ?? systemStrictClock;
@@ -127,7 +133,13 @@ export async function runStrictTask(input: StrictTaskInput): Promise<StrictWorkf
 
   try {
     const limits = resolveStrictLimits(input.limitOverrides);
-    const created = await createStrictWorkspaceChanges({ folder: input.repository, limits, signal: input.signal });
+    const created = await createStrictWorkspaceChanges({ folder: input.repository, limits, signal: input.signal,
+      ...(input.approvedContinuation ? { resume: {
+        baselineDigest: input.approvedContinuation.baselineDigest,
+        baselineHead: input.approvedContinuation.baselineHead,
+        preExistingEntries: input.approvedContinuation.preExistingEntries ?? [],
+      } } : {}),
+    });
     if (!created.ok) {
       const state = created.failure.code === "cancelled" ? "cancelled" : "failed";
       // The perimeter's total size is never a reason to stop: the only scan ceiling that
@@ -136,6 +148,8 @@ export async function runStrictTask(input: StrictTaskInput): Promise<StrictWorkf
         ? "Open a smaller workspace with fewer included files, then start a new Strict task."
         : created.failure.code === "cancelled"
         ? "Start a new Strict task when ready."
+        : input.approvedContinuation && created.failure.code === "workspace_changed"
+        ? "Inspect the workspace changes, then use Resume approved Strict work again. The approved plan is still saved; no provider was contacted."
         : created.failure.code === "workspace_changed"
         ? "Let the workspace settle — a build or a sync was writing into it — then start a new Strict task."
         : "Fix the workspace problem above, then start a new Strict task.";
@@ -148,7 +162,8 @@ export async function runStrictTask(input: StrictTaskInput): Promise<StrictWorkf
     }
     workspace = created.workspace;
     const starting = startingWork(workspace);
-    const preExistingEntries = starting.kind === "git" ? starting.entries : [];
+    const preExistingEntries = input.approvedContinuation?.preExistingEntries ??
+      (starting.kind === "git" ? starting.entries : []);
     const preExistingStatus = starting.kind;
     if (input.signal.aborted) {
       return finish("cancelled", "The Strict task was cancelled.", {
@@ -157,14 +172,22 @@ export async function runStrictTask(input: StrictTaskInput): Promise<StrictWorkf
         nextAction: "Start a new task when ready.",
       }, { limits, baseline: workspace.identity, preExistingEntries, preExistingStatus });
     }
-    // Written before the first provider request of the task, which is a phase A request.
+    const resumed = input.approvedContinuation;
+    if (resumed) {
+      const issue = resumedApprovalIssue(resumed, workspace.identity.digest,
+        input.localChecks.map((check) => check.id), limits.maxCanonicalPlanBytes);
+      if (issue) return finish("failed", issue.message, issue,
+        { limits, baseline: workspace.identity, preExistingEntries, preExistingStatus });
+    }
+    // Written before the first provider request, whether phase A or resumed phase B.
     await input.markers?.markActive(taskId);
 
-    const planPhase = await runStrictPlanPhase({
+    const planPhase = resumed ? resumedPlanPhase(resumed, limits, clock) : await runStrictPlanPhase({
       taskId,
       repository: input.repository,
       workingDirectory: workspace.pinnedRoot,
       task: input.task,
+      continuedPlan: input.continuedPlan,
       authorizedChecks: input.localChecks.map((check) => check.id),
       limits,
       claude: input.planningClaude,
@@ -206,6 +229,8 @@ export async function runStrictTask(input: StrictTaskInput): Promise<StrictWorkf
       localChecks: input.localChecks,
       declaredGeneratedOutputs: input.declaredGeneratedOutputs ?? [],
       workspace,
+      resumedChanges: workspace.resumedChanges,
+      resumedSnapshotDigest: workspace.resumedSnapshotDigest,
       claude: input.implementationClaude,
       codex: input.reviewCodex,
       runChecks: input.runChecks,
@@ -266,6 +291,49 @@ export async function runStrictTask(input: StrictTaskInput): Promise<StrictWorkf
     await workspace?.close().catch(() => undefined);
     releaseLock?.();
   }
+}
+
+function resumedApprovalIssue(value: StrictApprovedContinuation, currentDigest: string,
+  authorizedChecks: string[], maxPlanBytes: number): StrictOutcomeReason | undefined {
+  if (value.baselineDigest !== currentDigest) return {
+    code: "workspace_changed",
+    message: "The workspace no longer matches the baseline of the approved plan.",
+    nextAction: "Inspect the workspace changes, then re-evaluate the saved plan in a new Strict task.",
+  };
+  const validated = validateStrictPlan(value.plan, { authorizedChecks });
+  const canonical = validated.ok ? canonicalizeStrictPlan(validated.value) : undefined;
+  const approvals = value.consensus?.approvals;
+  const validApproval = canonical?.hash === value.planHash && canonical.bytes <= maxPlanBytes &&
+    value.consensus.subject === "plan" && value.consensus.hash === value.planHash &&
+    Boolean(value.consensus.reachedAt) &&
+    Array.isArray(value.consensus.openObjections) &&
+    !value.consensus.openObjections.some((objection) => objection.blocking) &&
+    Array.isArray(approvals) && ["claude", "codex"].every((provider) =>
+      approvals.some((approval) => approval.provider === provider && approval.subject === "plan" &&
+        approval.hash === value.planHash && approval.decision === "approve")) &&
+    value.humanApproval.approved === true && value.humanApproval.planHash === value.planHash &&
+    ["askBeforeChange", "fullAccess"].includes(value.humanApproval.executionPermission) &&
+    value.plan.questions.every((question) => Boolean(question.answer?.trim()));
+  if (validApproval) return undefined;
+  return { code: "baseline_unavailable", message: "The saved plan approval cannot be verified.",
+    nextAction: "Re-evaluate the saved plan in a new Strict task." };
+}
+
+function resumedPlanPhase(value: StrictApprovedContinuation, limits: StrictLimits,
+  clock: StrictClock): StrictPlanPhaseSuccess {
+  const canonical = canonicalizeStrictPlan(value.plan);
+  return {
+    ok: true,
+    approvedPlan: { hash: canonical.hash, schemaVersion: value.plan.schemaVersion,
+      canonicalBytes: canonical.bytes, revision: 1, source: "continued",
+      createdAt: new Date(clock.calendarMs()).toISOString(), plan: canonical.plan },
+    consensus: value.consensus, humanApproval: value.humanApproval,
+    plans: [{ hash: canonical.hash, schemaVersion: value.plan.schemaVersion,
+      canonicalBytes: canonical.bytes, revision: 1, source: "continued",
+      createdAt: new Date(clock.calendarMs()).toISOString(), plan: canonical.plan }],
+    sessions: [], events: [], metrics: [], budget: EMPTY_PHASE_BUDGET,
+    limits, nextState: "implementing",
+  };
 }
 
 function successMessage(plan: StrictPlanRecord, digest: string, checksConfigured: boolean): string {

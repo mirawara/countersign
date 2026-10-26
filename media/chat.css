@@ -65,6 +65,7 @@ button.icon.active { background: var(--tint-strong); color: var(--accent); }
 .dot.codex { background: var(--vscode-charts-green, #89d185); }
 .sheet-body label { display: block; min-width: 0; color: var(--muted); font-size: 10.5px; }
 .sheet-body label .select { margin-top: 3px; color: var(--vscode-foreground); font-size: var(--vscode-font-size); }
+.sheet-body label input[type="number"] { display: block; width: 100%; margin-top: 3px; padding: 5px 8px; color: var(--vscode-foreground); font-size: var(--vscode-font-size); }
 .sheet-body .wide { grid-column: 1 / -1; }
 .account-line { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; color: var(--muted); font-size: 11px; }
 .account-line span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -128,6 +129,9 @@ button.icon.active { background: var(--tint-strong); color: var(--accent); }
 .activity summary { padding: 2px 0; cursor: pointer; }
 .activity summary:hover { color: var(--vscode-foreground); }
 .activity pre { max-height: 180px; margin: 5px 0 0; padding: 7px 8px; border-radius: var(--r-sm); background: var(--tint); overflow: auto; font-family: var(--vscode-editor-font-family); white-space: pre-wrap; overflow-wrap: anywhere; }
+.report-details { margin-top: 10px; color: var(--muted); font-size: 11px; }
+.report-details summary { cursor: pointer; }
+.report-full { margin-top: 8px; color: var(--vscode-foreground); font-size: 12px; max-height: 50vh; overflow: auto; }
 .bubble-actions { display: flex; gap: 6px; margin-top: 9px; }
 .bubble-actions button { padding: 3px 9px; font-size: 11px; }
 @keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { ChatMessage, ChatState, ChatThread } from "./types";
+import { canonicalizeStrictPlan, validateStrictPlan } from "../orchestrator/strictPlanHash";
 
 export interface ChatStorage {
   get<T>(key: string): T | undefined;
@@ -112,6 +113,7 @@ function freshThread(): ChatThread {
 }
 
 function cleanMessage(message: ChatMessage): ChatMessage {
+  const strictContinuation = cleanStrictContinuation(message.strictContinuation);
   const usage = isRecord(message.usage) ? {
     ...(finiteNonnegative(message.usage.inputTokens) ? { inputTokens: message.usage.inputTokens } : {}),
     ...(finiteNonnegative(message.usage.outputTokens) ? { outputTokens: message.usage.outputTokens } : {}),
@@ -139,7 +141,57 @@ function cleanMessage(message: ChatMessage): ChatMessage {
     diffArtifact: typeof message.diffArtifact === "string" && /^[0-9a-f-]{36}\.diff$/.test(message.diffArtifact)
       ? message.diffArtifact : undefined,
     modeLabel: typeof message.modeLabel === "string" ? message.modeLabel.slice(0, 50) : undefined,
-    usage, quota,
+    usage, quota, strictContinuation,
+  };
+}
+
+function cleanStrictContinuation(value: unknown): ChatMessage["strictContinuation"] {
+  if (!isRecord(value) || typeof value.repository !== "string" || !value.repository.startsWith("/") ||
+      value.repository.length > 4_096 || typeof value.task !== "string" || value.task.length > MAX_TEXT ||
+      typeof value.planHash !== "string" || !/^[0-9a-f]{64}$/.test(value.planHash) ||
+      !isRecord(value.plan) || !Array.isArray(value.plan.checks)) return undefined;
+  const authorizedChecks = value.plan.checks.filter((check): check is string => typeof check === "string");
+  if (authorizedChecks.length !== value.plan.checks.length) return undefined;
+  const validated = validateStrictPlan(value.plan, { authorizedChecks });
+  if (!validated.ok) return undefined;
+  const canonical = canonicalizeStrictPlan(validated.value);
+  if (canonical.bytes > 65_536 || canonical.hash !== value.planHash) return undefined;
+  const baselineDigest = typeof value.baselineDigest === "string" && /^[0-9a-f]{64}$/.test(value.baselineDigest)
+    ? value.baselineDigest : undefined;
+  const baselineHead = typeof value.baselineHead === "string" && /^[0-9a-f]{40,64}$/.test(value.baselineHead)
+    ? value.baselineHead : undefined;
+  return { repository: value.repository, task: value.task, planHash: canonical.hash,
+    plan: canonical.plan, ...(baselineDigest ? { baselineDigest } : {}),
+    ...(baselineHead ? { baselineHead } : {}),
+    ...(Array.isArray(value.preExistingEntries) && value.preExistingEntries.length <= 100 &&
+      value.preExistingEntries.every((entry: unknown) => typeof entry === "string" && entry.length <= 4_096)
+      ? { preExistingEntries: value.preExistingEntries as string[] } : {}),
+    ...(baselineDigest ? { approved: cleanApprovedContinuation(value.approved, canonical.hash) } : {}) };
+}
+
+function cleanApprovedContinuation(value: unknown, hash: string):
+  NonNullable<NonNullable<ChatMessage["strictContinuation"]>["approved"]> | undefined {
+  if (!isRecord(value) || !isRecord(value.consensus) || !isRecord(value.humanApproval)) return undefined;
+  const consensus = value.consensus;
+  const human = value.humanApproval;
+  if (consensus.subject !== "plan" || consensus.hash !== hash ||
+      typeof consensus.reachedAt !== "string" || !Array.isArray(consensus.approvals) ||
+      !Array.isArray(consensus.openObjections) || consensus.openObjections.some((item) =>
+        !isRecord(item) || item.blocking === true) ||
+      human.approved !== true || human.planHash !== hash || typeof human.decidedAt !== "string" ||
+      !["askBeforeChange", "fullAccess"].includes(String(human.executionPermission))) return undefined;
+  const rawApprovals = consensus.approvals as unknown[];
+  const approvals = ["claude", "codex"].map((provider) => rawApprovals.find((item: unknown) =>
+    isRecord(item) && item.provider === provider && item.subject === "plan" &&
+    item.hash === hash && item.decision === "approve" && typeof item.decidedAt === "string"));
+  if (approvals.some((item) => !isRecord(item))) return undefined;
+  return {
+    consensus: { subject: "plan", hash, reachedAt: consensus.reachedAt,
+      approvals: approvals.map((item) => ({ provider: (item as Record<string, unknown>).provider as "claude" | "codex",
+        subject: "plan" as const, hash, decision: "approve" as const,
+        decidedAt: (item as Record<string, unknown>).decidedAt as string })), openObjections: [] },
+    humanApproval: { approved: true, planHash: hash, decidedAt: human.decidedAt,
+      executionPermission: human.executionPermission as "askBeforeChange" | "fullAccess" },
   };
 }
 

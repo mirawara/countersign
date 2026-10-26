@@ -55,6 +55,9 @@ export interface StrictImplementationPhaseInput {
   /** Generated outputs declared before the run; each must be policy-excluded. */
   declaredGeneratedOutputs: string[];
   workspace: StrictWorkspace;
+  /** Exact partial changes verified against the approved baseline before the first turn. */
+  resumedChanges?: readonly { path: string; status: StrictSnapshotRecord["entries"][number]["status"] }[];
+  resumedSnapshotDigest?: string;
   claude: StrictImplementationProvider;
   codex: StrictReviewProvider;
   /** Runs the configured checks; the working directory is the pinned root. */
@@ -320,13 +323,18 @@ export async function runStrictImplementationPhase(
     // Nothing has been written yet: the perimeter must still match the baseline the plan
     // was agreed against, including anything that moved while the approval was open.
     const entry = await capture();
-    if (entry.record.changedFileCount > 0 || entry.changedUnsupportedPaths.length > 0) {
+    const resumedPaths = new Map((input.resumedChanges ?? []).map((change) => [change.path, change.status]));
+    const onlyResumedChanges = entry.record.entries.length === resumedPaths.size &&
+      entry.record.entries.every((change) => resumedPaths.get(change.path) === change.status);
+    if (!onlyResumedChanges || entry.changedUnsupportedPaths.length > 0 ||
+        (input.resumedSnapshotDigest && entry.record.digest !== input.resumedSnapshotDigest)) {
       throw new StrictPhaseFailure("failed", {
         code: "workspace_changed",
         message: `The workspace changed between the plan approval and the first write (${entry.record.changedFileCount} reviewable change(s)). The approved plan no longer describes what is on disk.`,
         nextAction: "Inspect those changes, then start a new Strict task against a fresh baseline.",
       }, "The workspace changed between the plan approval and the first write.");
     }
+    if (resumedPaths.size > 0) note(`Resuming with ${resumedPaths.size} partial change(s) verified against the approved baseline.`);
     note("A fresh Claude context is implementing the approved plan.");
     budget.resume();
 
@@ -414,8 +422,17 @@ export async function runStrictImplementationPhase(
       let results: CheckResult[] = [];
       let checkedDigest = "";
       let stable = false;
-      for (let attempt = 0; attempt < input.limits.implementationPhase.maxReviewCycles && !stable; attempt++) {
+      const checkedDigests = new Set<string>();
+      while (!stable) {
         checkedDigest = snapshot.record.digest;
+        if (checkedDigests.has(checkedDigest)) {
+          throw new StrictPhaseFailure("consensus_not_reached", {
+            code: "checks_failed",
+            message: "Configured checks returned to a previously checked digest without stabilizing.",
+            nextAction: "Make the checks leave the reviewed files unchanged, then resume in a new task.",
+          });
+        }
+        checkedDigests.add(checkedDigest);
         results = input.localChecks.length > 0
           ? await input.runChecks(input.localChecks, input.signal, input.workingDirectory)
           : [];
@@ -433,13 +450,6 @@ export async function runStrictImplementationPhase(
         if (!stable) {
           note(`A configured check changed files inside the perimeter: digest ${checkedDigest} became ${snapshot.record.digest}. The checks run again on the new state.`);
         }
-      }
-      if (!stable) {
-        throw new StrictPhaseFailure("consensus_not_reached", {
-          code: "checks_failed",
-          message: `The configured checks keep changing files inside the reviewed perimeter, so no snapshot can be both checked and reviewed. Last digest: ${snapshot.record.digest}.`,
-          nextAction: "Declare those generated outputs before the run, or point the checks outside the reviewed paths.",
-        }, "The configured checks keep changing the reviewed perimeter; no snapshot could be both checked and reviewed.");
       }
       failedChecks = results.filter((result) => !result.passed);
 
@@ -670,7 +680,7 @@ function madeProgress(
 }
 
 function overCycleLimit(cycle: number, limits: StrictLimits): boolean {
-  return cycle >= limits.implementationPhase.maxReviewCycles;
+  return limits.implementationPhase.maxReviewCycles > 0 && cycle >= limits.implementationPhase.maxReviewCycles;
 }
 
 function cycleLimitFailure(cycle: number, limits: StrictLimits): StrictPhaseFailure {
@@ -748,7 +758,9 @@ function failureFor(error: unknown, state: StrictWorkflowState): [StrictImplemen
       return ["blocked_auth_or_quota", {
         code: error.kind === "quota" ? "quota_exhausted" : "authentication_failed",
         message: error.message,
-        nextAction: "Check the provider login or wait for the quota to reset.",
+        nextAction: error.kind === "quota"
+          ? "Use Change account and resume on this report, or wait for the quota reset. Strict reuses the approval only if the workspace still matches its baseline."
+          : "Check the provider login, then resume only if the workspace still matches its approved baseline.",
       }];
     }
     if (error.kind === "permissions") {

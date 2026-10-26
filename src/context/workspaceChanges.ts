@@ -149,7 +149,15 @@ function compare(before: Map<string, FileState>, after: Map<string, FileState>):
  * literal path "dev/null".
  */
 export function buildFilePatch(path: string, before: Buffer | undefined, after: Buffer | undefined): string {
-  const operations = diffLines(lines(decode(before, path)), lines(decode(after, path)), path);
+  const oldLines = lines(decode(before, path));
+  const newLines = lines(decode(after, path));
+  // A new or deleted file needs no edit-distance search. Large refactors commonly add
+  // thousands of lines, and the generic 2,048-operation guard would reject them.
+  const operations = before === undefined
+    ? newLines.map((line): DiffOperation => ({ kind: "insert", line }))
+    : after === undefined
+    ? oldLines.map((line): DiffOperation => ({ kind: "delete", line }))
+    : diffLines(oldLines, newLines, path);
   return [`diff --git a/${path} b/${path}`,
     ...(before ? [] : ["new file mode 100644"]), ...(after ? [] : ["deleted file mode 100644"]),
     `--- ${before ? `a/${path}` : "/dev/null"}`, `+++ ${after ? `b/${path}` : "/dev/null"}`,

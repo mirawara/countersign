@@ -202,6 +202,7 @@ export class StrictClaudeProvider implements StrictPlanningProvider, StrictImple
         IMPLEMENTATION_SCHEMA as unknown as Record<string, unknown>,
         this.options.askPermission,
         this.options.accountDir,
+        true,
       ).catch((error: unknown) => { throw mapClaudeError(error); });
       return structuredReply(raw);
     }
@@ -343,6 +344,10 @@ function structuredReply(stdout: string): StrictPhaseBReply {
   const metrics = {
     ...(typeof record.total_cost_usd === "number" ? { estimatedCostUsd: record.total_cost_usd } : {}),
     ...(typeof usage?.input_tokens === "number" ? { inputTokens: usage.input_tokens } : {}),
+    ...(typeof usage?.cache_read_input_tokens === "number"
+      ? { cacheReadInputTokens: usage.cache_read_input_tokens } : {}),
+    ...(typeof usage?.cache_creation_input_tokens === "number"
+      ? { cacheCreationInputTokens: usage.cache_creation_input_tokens } : {}),
     ...(typeof usage?.output_tokens === "number" ? { outputTokens: usage.output_tokens } : {}),
   };
   return {

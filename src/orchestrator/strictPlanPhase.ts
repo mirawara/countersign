@@ -42,6 +42,8 @@ export interface StrictPlanPhaseInput {
   /** Working directory for provider processes and local checks: the pinned root. */
   workingDirectory: string;
   task: string;
+  /** Earlier draft to re-evaluate. No provider or human decision is carried over. */
+  continuedPlan?: StrictPlan;
   /** Check ids the task authorised; a plan may name only these. */
   authorizedChecks: string[];
   /** Frozen when the task started; the approval gate does not change them. */
@@ -270,10 +272,15 @@ export async function runStrictPlanPhase(input: StrictPlanPhaseInput): Promise<S
     }
     await input.baseline.assertUnchanged();
 
-    emit("planning", "Strict phase A started: Claude is drafting the canonical plan under read-only tools.");
+    emit("planning", input.continuedPlan
+      ? "Strict phase A started: re-evaluating a saved plan against the current workspace. No earlier approval carries over."
+      : "Strict phase A started: Claude is drafting the canonical plan under read-only tools.");
     budget.resume();
 
-    let current = recordPlan(await exchange(
+    const candidate = input.continuedPlan
+      ? validateStrictPlan(input.continuedPlan, { authorizedChecks: input.authorizedChecks })
+      : undefined;
+    const currentPlan = candidate?.ok ? candidate.value : await exchange(
       input.claude,
       (signal, timeoutMs, retryErrors, previousRaw) => input.claude.request({
         kind: "propose",
@@ -293,7 +300,11 @@ export async function runStrictPlanPhase(input: StrictPlanPhaseInput): Promise<S
         authorizedChecks: input.authorizedChecks,
         maxResponseBytes: input.limits.maxStructuredResponseBytes,
       }),
-    ), "initial");
+    );
+    if (input.continuedPlan && !candidate?.ok) {
+      note("The saved plan does not match current Strict checks, so Claude drafted a new plan.");
+    }
+    let current = recordPlan(currentPlan, candidate?.ok ? "continued" : "initial");
     note(`Plan revision ${current.revision} has hash ${current.hash}.`);
 
     const approvals = new Map<ProviderKind, StrictProviderApproval>();
@@ -302,6 +313,7 @@ export async function runStrictPlanPhase(input: StrictPlanPhaseInput): Promise<S
     // configured one. A revision that returns an already evaluated hash is no progress.
     const stallCeiling = input.limits.implementationPhase.stallCycles;
     let planObjections: StrictObjection[] = [];
+    let priorRevisionObjections: StrictObjection[] = [];
     let revisionsWithoutProgress = 0;
 
     while (true) {
@@ -326,6 +338,7 @@ export async function runStrictPlanPhase(input: StrictPlanPhaseInput): Promise<S
         current = recordPlan(answerStrictPlanQuestion(current.plan, pending.id, answer.trim()), "human_revision");
         approvals.clear();
         planObjections = [];
+        priorRevisionObjections = [];
         consensus = undefined;
         emit("planning", `The answer is now part of the plan: revision ${current.revision}, hash ${current.hash}. Both provider approvals are void.`);
         continue;
@@ -349,7 +362,7 @@ export async function runStrictPlanPhase(input: StrictPlanPhaseInput): Promise<S
             plan: evaluated.plan,
             planHash: evaluated.hash,
             canonicalPlan,
-            priorObjections: planObjections,
+            priorObjections: [...priorRevisionObjections, ...planObjections],
             authorizedChecks: input.authorizedChecks,
             signal,
             timeoutMs,
@@ -387,7 +400,10 @@ export async function runStrictPlanPhase(input: StrictPlanPhaseInput): Promise<S
           const noProgress = revised.hash === evaluated.hash || evaluatedHashes.has(revised.hash);
           revisionsWithoutProgress = noProgress ? revisionsWithoutProgress + 1 : 0;
           approvals.clear();
-          planObjections = response.objections;
+          // These objections describe the replaced hash. Pass them as context, but do
+          // not report them as open objections on the revised plan after both approve.
+          priorRevisionObjections = response.objections;
+          planObjections = [];
           consensus = undefined;
           current = revised;
           if (revisionsWithoutProgress >= stallCeiling) {
@@ -457,6 +473,7 @@ export async function runStrictPlanPhase(input: StrictPlanPhaseInput): Promise<S
         current = recordPlan(validated.value, "human_revision");
         approvals.clear();
         planObjections = [];
+        priorRevisionObjections = [];
         consensus = undefined;
         emit("planning", `You edited the plan: revision ${current.revision}, hash ${current.hash}. Both provider approvals are void and phase A reopens.`);
         continue;
@@ -515,7 +532,7 @@ function failureFor(error: unknown, state: StrictWorkflowState): [StrictPlanPhas
     return ["consensus_not_reached", {
       code: "limit_reached",
       message: error.message,
-      nextAction: "Start a new Strict task with a narrower request or a higher phase A ceiling.",
+      nextAction: "Use the continuation button on this Strict report to re-evaluate its last draft in a new task, or start a narrower Strict task. You can set the phase A request ceiling in Turn settings.",
       limit: error.breach,
     }];
   }

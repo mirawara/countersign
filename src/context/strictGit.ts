@@ -16,7 +16,8 @@ export type StrictGitReading =
   /** Git exists but could not answer; this is not evidence of a clean tree. */
   | { kind: "unavailable" };
 
-const GIT_TIMEOUT_MS = 10_000;
+// Git is a local read bound to the task's cancellation signal, not a timed request.
+const GIT_TIMEOUT_MS = 0;
 
 export async function readStrictGit(
   pinnedRoot: string,
@@ -50,6 +51,28 @@ export async function readStrictGit(
     ...(revision ? { head: revision } : {}),
     dirtyEntries: status.stdout.split(/\r?\n/).filter(Boolean),
   };
+}
+
+/** Immutable HEAD blob used only to reconstruct an approved baseline after interruption. */
+export async function readStrictGitBaselineFile(
+  pinnedRoot: string, head: string, path: string, signal?: AbortSignal,
+): Promise<{ content: Buffer; mode: string } | undefined> {
+  if (!/^[0-9a-f]{40,64}$/.test(head) || !path || path.startsWith("/") ||
+      path.split("/").includes("..") || /[\r\n\0]/.test(path)) {
+    throw new Error("Invalid Git baseline file identity.");
+  }
+  const tree = await runExecutable("git", ["-c", "core.fsmonitor=false", "ls-tree", head, "--", path], {
+    cwd: pinnedRoot, timeoutMs: GIT_TIMEOUT_MS, maxOutputBytes: 4_096, signal,
+  });
+  if (tree.exitCode !== 0) throw new Error("Git could not read the approved baseline tree.");
+  if (!tree.stdout.trim()) return undefined;
+  const match = tree.stdout.match(/^([0-7]{6}) blob [0-9a-f]+\t(.+)\n?$/);
+  if (!match || match[2] !== path) throw new Error("The approved baseline path is not a regular Git blob.");
+  const blob = await runExecutable("git", ["-c", "core.fsmonitor=false", "show", `${head}:${path}`], {
+    cwd: pinnedRoot, timeoutMs: GIT_TIMEOUT_MS, maxOutputBytes: 2 * 1024 * 1024, signal,
+  });
+  if (blob.exitCode !== 0) throw new Error("Git could not read the approved baseline file.");
+  return { content: Buffer.from(blob.stdout, "utf8"), mode: match[1] };
 }
 
 /** Returns undefined when Git could not run; a cancellation is rethrown to the task. */

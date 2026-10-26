@@ -376,7 +376,41 @@
     ].filter(Boolean);
   }
 
-  function messageNode(message) {
+  function strictReportSummary(report) {
+    const line = (name) => report.match(new RegExp(`^${name}: (.+)$`, "m"))?.[1] || "";
+    const status = line("Status");
+    const reason = line("Reason").replace(/^[a-z_]+ — /, "");
+    const next = line("Next action");
+    if (status === "blocked_auth_or_quota" && /^Reason: quota_exhausted\b/m.test(report) &&
+        /## Human approval\nApproved at /m.test(report)) {
+      const provider = /^Reason: quota_exhausted — Codex\b/m.test(report) ? "Codex" : "Claude";
+      return [`Plan approved. ${provider} stopped during implementation because this account reached its usage limit.`,
+        reason, `Choose another ${provider} account below. Strict checks the approved baseline before resuming.`];
+    }
+    if (status === "completed_clean") return ["Strict completed the plan and both agents approved the final changes."];
+    return [`Strict stopped: ${reason || line("Outcome") || status || "unknown reason"}`,
+      ...(next ? [`Next: ${next}`] : [])];
+  }
+
+  function approvedResumeSource(messages, index) {
+    const message = messages[index];
+    if (message?.role !== "assistant" || message.modeLabel !== "Strict" ||
+        !message.text?.startsWith("Strict could not start:")) return null;
+    // A failed preflight has no full report. Its preceding user message was generated
+    // from the approved report, so use the matching saved approval as the action target.
+    // This also restores the button on failures already saved before this fix.
+    const match = messages[index - 1]?.text?.match(/^Resume approved Strict plan ([0-9a-f]{12})…/);
+    if (!match || messages[index - 1]?.role !== "user") return null;
+    for (let previous = index - 2; previous >= 0; previous--) {
+      const report = messages[previous];
+      if (report.modeLabel === "Strict report" && report.strictContinuation?.approved &&
+          report.strictContinuation.planHash?.startsWith(match[1]) &&
+          !report.text?.includes("Status: completed_clean")) return report;
+    }
+    return null;
+  }
+
+  function messageNode(message, resumeSource) {
     const row = node("article", `row ${message.role}`);
     const bubble = node("div", "bubble");
     const head = node("div", "head");
@@ -385,7 +419,20 @@
     head.append(node("span", "time", timeLabel(message.createdAt)));
     bubble.append(head);
     const body = node("div", "body");
-    if (message.text) for (const block of markdownNodes(message.text)) body.append(block);
+    const strictReport = message.modeLabel === "Strict report" && message.text?.includes("Strict workflow report");
+    if (strictReport) {
+      for (const line of strictReportSummary(message.text)) body.append(node("p", "", line));
+      const details = node("details", "report-details");
+      details.append(node("summary", "", "Full technical report"));
+      details.addEventListener("toggle", () => {
+        if (!details.open || details.dataset.rendered) return;
+        const full = node("div", "report-full");
+        for (const block of markdownNodes(message.text)) full.append(block);
+        details.append(full);
+        details.dataset.rendered = "true";
+      });
+      body.append(details);
+    } else if (message.text) for (const block of markdownNodes(message.text)) body.append(block);
     else if (message.status === "running") body.append(node("span", "typing", "Working…"));
     bubble.append(body);
     const chips = detailChips(message);
@@ -405,11 +452,30 @@
       details.append(node("pre", "", message.activity.slice(-40).join("\n")));
       bubble.append(details);
     }
-    if (message.diffArtifact) {
+    if (message.diffArtifact || (strictReport && !message.text.includes("Status: completed_clean")) || resumeSource) {
       const actions = node("div", "bubble-actions");
-      const open = node("button", "", "Show diff");
-      open.addEventListener("click", () => post({ type: "openDiff", messageId: message.id }));
-      actions.append(open);
+      if (message.diffArtifact) {
+        const open = node("button", "", "Show diff");
+        open.addEventListener("click", () => post({ type: "openDiff", messageId: message.id }));
+        actions.append(open);
+      }
+      if ((strictReport && !message.text.includes("Status: completed_clean")) || resumeSource) {
+        const source = resumeSource || message;
+        const quotaStop = /^Reason: quota_exhausted\b/m.test(source.text);
+        const approvedResume = source.strictContinuation?.approved ||
+          (/(?:^Reason: (?:quota_exhausted|timed_out)\b)/m.test(source.text) && /## Human approval\nApproved at /m.test(source.text));
+        const quotaProvider = /^Reason: quota_exhausted — Codex\b/m.test(source.text) ? "Codex" : "Claude";
+        const resume = node("button", "", approvedResume ? (quotaStop ? `Change ${quotaProvider} account and resume` : "Resume approved Strict work") :
+          source.strictContinuation ? "Continue Strict plan" : "Retry in Strict");
+        resume.disabled = busy || repositoryBusy;
+        resume.title = approvedResume
+          ? `Strict verifies the approved baseline and partial files before resuming. ${quotaStop ? `Choose a ${quotaProvider} account first.` : ""}`
+          : source.strictContinuation
+          ? "Re-evaluate this saved draft in a new Strict task. New provider and human approvals are required."
+          : "Use the last draft in this older report as context for a new Strict plan.";
+        resume.addEventListener("click", () => post({ type: "continueStrict", messageId: source.id }));
+        actions.append(resume);
+      }
       bubble.append(actions);
     }
     row.append(bubble);
@@ -417,13 +483,16 @@
   }
 
   function renderMessages() {
-    const key = `${stateSession}:${chatRevision}`;
+    // A task can finish without changing the chat revision after its last message was
+    // saved. Buttons rendered while busy must be recreated when the lock is released.
+    const key = `${stateSession}:${chatRevision}:${busy}:${repositoryBusy}`;
     if (renderedChatKey === key) return;
     const thread = state?.threads.find((entry) => entry.id === state.activeThreadId);
     const nearBottom = dom.messages.scrollHeight - dom.messages.scrollTop - dom.messages.clientHeight < 70;
     const messages = thread?.messages ?? [];
     dom.empty.classList.toggle("hidden", messages.length > 0);
-    dom.messages.replaceChildren(...messages.map(messageNode));
+    dom.messages.replaceChildren(...messages.map((message, index) =>
+      messageNode(message, approvedResumeSource(messages, index))));
     if (nearBottom) dom.messages.scrollTop = dom.messages.scrollHeight;
     renderedChatKey = key;
   }

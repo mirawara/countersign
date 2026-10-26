@@ -1,3 +1,5 @@
+import type { StrictConsensus, StrictHumanApproval, StrictPlan } from "../shared/strict";
+
 export type ChatProvider = "mock" | "claude" | "codex";
 export type ChatRole = "user" | "assistant" | "system";
 export type ChatStatus = "running" | "completed" | "failed" | "cancelled" | "interrupted";
@@ -32,6 +34,17 @@ export interface ChatMessage {
   quota?: ChatQuota;
   diffArtifact?: string;
   modeLabel?: string;
+  /** A draft to re-evaluate in a new Strict task; no prior approval is persisted here. */
+  strictContinuation?: {
+    repository: string;
+    task: string;
+    baselineDigest?: string;
+    baselineHead?: string;
+    planHash: string;
+    plan: StrictPlan;
+    preExistingEntries?: string[];
+    approved?: { consensus: StrictConsensus; humanApproval: StrictHumanApproval };
+  };
 }
 
 export interface ChatThread {
