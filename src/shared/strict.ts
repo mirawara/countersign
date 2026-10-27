@@ -450,6 +450,8 @@ export interface StrictResultCore {
   sessions: StrictSessionRecord[];
   findings: StrictFinding[];
   checkRounds: StrictCheckRound[];
+  /** Claude's own account of the implementation; the report opens with it. Absent when phase B never produced one. */
+  implementationSummary?: string;
   /** Changes already present before the task; preserved and kept distinct from the task delta. */
   preExistingEntries: string[];
   /**

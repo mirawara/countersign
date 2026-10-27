@@ -20,6 +20,7 @@ function core(): StrictResultCore {
     startedAt: "2026-10-22T09:00:00.000Z",
     finishedAt: "2026-10-22T09:40:00.000Z",
     message: "SECRET_PROVIDER_MESSAGE",
+    implementationSummary: "Added the parser entry point in src/a.ts and wired it into the existing loader.",
     limits: resolveStrictLimits({ }),
     limitBreaches: [],
     budget: {
@@ -180,6 +181,34 @@ describe("Strict report contract", () => {
     ]) {
       expect(report, fragment).toContain(fragment);
     }
+  });
+
+  it("opens with the work before the provenance, and keeps the audit material after it", () => {
+    const report = detailedWorkflowReport(cleanResult);
+    for (const fragment of [
+      "## What was implemented",
+      "Added the parser entry point in src/a.ts and wired it into the existing loader.",
+      "## Files changed",
+      "- modified: src/a.ts",
+      "## Review",
+      "0 open, 1 resolved, 1 disputed.",
+      "## Checks",
+      "## Run details",
+    ]) {
+      expect(report, fragment).toContain(fragment);
+    }
+    const at = (heading: string): number => report.indexOf(heading);
+    expect(at("## What was implemented")).toBeLessThan(at("## Files changed"));
+    expect(at("## Checks")).toBeLessThan(at("## Run details"));
+    expect(at("## Run details")).toBeLessThan(at("## Plan history"));
+    expect(at("## Plan history")).toBeLessThan(at("## Provider usage"));
+    // Started, finished and the model choice are provenance: they belong after the answer.
+    expect(at("## What was implemented")).toBeLessThan(report.indexOf("Started: "));
+  });
+
+  it("says so plainly when phase B returned no account of the work", () => {
+    const silent = { ...cleanResult, implementationSummary: undefined };
+    expect(detailedWorkflowReport(silent)).toContain("No implementation summary was returned.");
   });
 
   it("states the reason, the next action and the limit reached for a failed outcome", () => {

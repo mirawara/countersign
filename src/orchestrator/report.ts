@@ -167,6 +167,23 @@ function detailedStrictReport(result: StrictWorkflowResult): string {
       : "Reason: completed_clean. Every Strict condition below was met.",
     `Task: ${result.task}`,
     `Workspace: ${result.repository}`,
+    "",
+    "## What was implemented",
+    result.implementationSummary?.trim() || "No implementation summary was returned.",
+    "",
+    "## Files changed",
+    ...changedFileLines(result),
+    "",
+    "## Review",
+    ...findingLines(result),
+    "",
+    "## Checks",
+    ...checkRoundLines(result),
+    "",
+    "---",
+    "Everything below records how that result was reached: provenance, hashes, budgets and timing.",
+    "",
+    "## Run details",
     `Started: ${result.startedAt}`,
     `Finished: ${result.finishedAt}`,
     result.selectedModels
@@ -247,27 +264,6 @@ function detailedStrictReport(result: StrictWorkflowResult): string {
       ? result.sessions.map((session) => `- ${session.role}: ${session.provider}${session.providerVersion ? ` ${session.providerVersion}` : ""}; session ${session.sessionId ?? "identifier not reported"}; context ${session.isolation === "verified_new_context" ? "verified as new" : "not verifiable, which blocks Strict"}; started ${session.startedAt}`)
       : ["No provider session was opened."]),
     "",
-    "## Findings",
-    ...(result.findings.length
-      ? result.findings.slice(0, 50).flatMap((finding, index) => [
-        `${index + 1}. [${finding.status}${finding.blocking ? ", blocking" : ""}] ${finding.severity} — ${finding.file}:${finding.line} — ${finding.summary.slice(0, 500)}`,
-        `   Reported on digest ${finding.reportedOnDigest}`,
-        `   Evidence: ${finding.evidence.slice(0, 1_000)}${finding.evidence.length > 1_000 ? "…" : ""}`,
-        ...(finding.resolution ? [`   ${finding.resolution.by} at ${finding.resolution.decidedAt} on digest ${finding.resolution.snapshotDigest}: ${finding.resolution.rationale}`] : []),
-      ])
-      : ["No finding was reported. A review without findings still needed an explicit snapshot approval."]),
-    ...(result.findings.length > 50 ? [`…and ${result.findings.length - 50} more findings.`] : []),
-    "",
-    "## Local checks per round",
-    ...(result.checkRounds.length
-      ? result.checkRounds.flatMap((round) => [
-        `Round ${round.round} (${round.trigger}) on digest ${round.snapshotDigest}:`,
-        ...(round.configured
-          ? round.results.map((check) => `- ${check.id}: ${check.passed ? "passed" : "failed"}; exit ${check.exitCode ?? "unavailable"}${check.timedOut ? "; timed out" : ""}${check.output ? `; output: ${check.output.slice(0, 600).replace(/\s+/g, " ")}${check.output.length > 600 ? "…" : ""}` : ""}`)
-          : ["- No local check is configured. No test was run and none is reported as passing."]),
-      ])
-      : ["No check round was run."]),
-    "",
     "## Changes already present before this task",
     ...(result.preExistingEntries.length
       ? result.preExistingEntries.slice(0, 100).map((entry) => `- ${entry}`)
@@ -315,6 +311,42 @@ function detailedStrictReport(result: StrictWorkflowResult): string {
     "A clean Strict completion requires all of: provider agreement on one plan hash, human approval, configured checks passing on the last snapshot, no open blocking finding, explicit Codex and Claude approvals of the same final digest, a stable baseline, and no unreviewable change. Changes confined to the policy-excluded paths listed above are expected and block nothing; they never enter the digest. USD figures are provider estimates, not subscription charges.",
   ];
   return lines.filter((line) => line !== undefined).join("\n").slice(0, 98_000);
+}
+
+/** The final reviewed snapshot, as a plain list of paths with what happened to each. */
+function changedFileLines(result: StrictWorkflowResult): string[] {
+  const entries = result.snapshots.at(-1)?.entries ?? [];
+  if (entries.length === 0) return ["No file was changed inside the reviewed perimeter."];
+  const shown = entries.slice(0, 100).map((entry) =>
+    `- ${entry.status}: ${entry.path}${entry.kind === "file" ? "" : ` (${entry.kind})`}`);
+  return entries.length > 100 ? [...shown, `…and ${entries.length - 100} more file(s).`] : shown;
+}
+
+/** What Codex reported and how each report was settled. */
+function findingLines(result: StrictWorkflowResult): string[] {
+  if (result.findings.length === 0) {
+    return ["Codex reported no finding. A review without findings still needed an explicit snapshot approval."];
+  }
+  const counted = `${countFindings(result, "open")} open, ${countFindings(result, "resolved")} resolved, ${countFindings(result, "disputed")} disputed.`;
+  const lines = result.findings.slice(0, 50).flatMap((finding, index) => [
+    `${index + 1}. [${finding.status}${finding.blocking ? ", blocking" : ""}] ${finding.severity} — ${finding.file}:${finding.line} — ${finding.summary.slice(0, 500)}`,
+    `   Evidence: ${finding.evidence.slice(0, 1_000)}${finding.evidence.length > 1_000 ? "…" : ""}`,
+    ...(finding.resolution ? [`   ${finding.resolution.by}: ${finding.resolution.rationale}`] : []),
+    `   Reported on digest ${finding.reportedOnDigest}${finding.resolution ? `; settled at ${finding.resolution.decidedAt} on digest ${finding.resolution.snapshotDigest}` : ""}`,
+  ]);
+  return [counted, ...lines,
+    ...(result.findings.length > 50 ? [`…and ${result.findings.length - 50} more findings.`] : [])];
+}
+
+/** Configured local checks, one round per implementation or correction pass. */
+function checkRoundLines(result: StrictWorkflowResult): string[] {
+  if (result.checkRounds.length === 0) return ["No check round was run."];
+  return result.checkRounds.flatMap((round) => [
+    `Round ${round.round} (${round.trigger}) on digest ${round.snapshotDigest}:`,
+    ...(round.configured
+      ? round.results.map((check) => `- ${check.id}: ${check.passed ? "passed" : "failed"}; exit ${check.exitCode ?? "unavailable"}${check.timedOut ? "; timed out" : ""}${check.output ? `; output: ${check.output.slice(0, 600).replace(/\s+/g, " ")}${check.output.length > 600 ? "…" : ""}` : ""}`)
+      : ["- No local check is configured. No test was run and none is reported as passing."]),
+  ]);
 }
 
 function strictProviderUsageLine(item: StrictWorkflowResult["metrics"][number]): string {

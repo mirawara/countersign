@@ -376,19 +376,48 @@
     ].filter(Boolean);
   }
 
+  /** Body of one "## Heading" section, up to the next heading or the technical-detail rule. */
+  function reportSection(report, heading) {
+    const opening = `\n## ${heading}\n`;
+    const start = report.indexOf(opening);
+    if (start < 0) return "";
+    const rest = report.slice(start + opening.length);
+    const end = rest.search(/\n## |\n---\n/);
+    return (end < 0 ? rest : rest.slice(0, end)).trim();
+  }
+
+  /** One line naming the size of the change, what the review said and how the checks ended. */
+  function strictOutcomeStats(report) {
+    const files = reportSection(report, "Files changed")
+      .split("\n").filter((entry) => entry.startsWith("- ")).length;
+    const findings = reportSection(report, "Review");
+    const review = /^\d+ open/.test(findings) ? findings.split("\n")[0].replace(/\.$/, "") : "no review finding";
+    const checks = reportSection(report, "Checks");
+    const checkState = checks.includes("No local check is configured") ? "no check configured"
+      : /^- .+: failed/m.test(checks) ? "a check failed"
+      : checks.includes(": passed") ? "checks passed" : "no check run";
+    return `${files} file(s) changed; ${review}; ${checkState}.`;
+  }
+
   function strictReportSummary(report) {
     const line = (name) => report.match(new RegExp(`^${name}: (.+)$`, "m"))?.[1] || "";
     const status = line("Status");
     const reason = line("Reason").replace(/^[a-z_]+ — /, "");
     const next = line("Next action");
+    const implemented = reportSection(report, "What was implemented");
+    const done = implemented && !implemented.startsWith("No implementation summary") ? implemented : "";
     if (status === "blocked_auth_or_quota" && /^Reason: quota_exhausted\b/m.test(report) &&
         /## Human approval\nApproved at /m.test(report)) {
       const provider = /^Reason: quota_exhausted — Codex\b/m.test(report) ? "Codex" : "Claude";
       return [`Plan approved. ${provider} stopped during implementation because this account reached its usage limit.`,
         reason, `Choose another ${provider} account below. Strict checks the approved baseline before resuming.`];
     }
-    if (status === "completed_clean") return ["Strict completed the plan and both agents approved the final changes."];
+    if (status === "completed_clean") {
+      return [done || "Strict completed the plan and both agents approved the final changes.",
+        strictOutcomeStats(report)];
+    }
     return [`Strict stopped: ${reason || line("Outcome") || status || "unknown reason"}`,
+      ...(done ? [`Done so far: ${done}`] : []),
       ...(next ? [`Next: ${next}`] : [])];
   }
 
