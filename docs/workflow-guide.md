@@ -23,6 +23,8 @@ Node.js is required to build the extension from source, or if you configure Node
 
 Every workflow uses Claude for planning and implementation and Codex for review. Both accounts must be signed in. There is no mock execution mode in the extension; automated tests use internal provider fakes.
 
+Countersign uses Caveman at ultra intensity for Claude and Codex prose, under the `countersign.cavemanStyle` setting: the internal provider exchanges are always compressed, while the text you read follows the setting (`auto` by default, which follows the installed skill). Claude CLI turns read its Rules, ultra intensity and Auto-Clarity lines from the selected profile on each request while slash commands remain disabled. Claude SDK turns load the skill natively through an isolated temporary plugin without hooks or MCP servers, reusing the copy while unchanged. Codex CLI reviews keep their isolated configuration and read the same style lines from the installed skill at each request. Updates to these installed instructions apply without rebuilding the extension; a short built-in instruction is used if a skill is unavailable. Paths, code, commands, errors and structured JSON remain exact.
+
 ## Installation
 
 With a `.vsix` file: open the Command Palette (`Ctrl+Shift+P`, `Cmd+Shift+P` on macOS), run **Extensions: Install from VSIX...** and select the file. Reload the window if VS Code asks. Look for **Countersign** in the list of installed extensions.
@@ -44,6 +46,7 @@ No `.vsix` is published in this repository — see the README for why, and build
 
    Adapt `localChecks` to your repository's commands. The extension never discovers or starts tests on its own: with an empty list it runs no check at all. Checks take a separate executable and argument array, with no shell. Using user settings avoids creating an untracked `.vscode/settings.json` in the repository under test.
 3. Run **Countersign: Verify Claude Settings Isolation**. After your confirmation it runs a controlled test with **two real Claude requests**. A pass applies only to the exact installed Claude CLI version, so repeat it after an upgrade. The verification can consume quota.
+   This build requires a new pass even if the CLI version is unchanged. The gate verifies that a probe skill loads in a control turn, then that CLI skills and project hooks are disabled in an isolated turn. Later Caveman skill updates do not require another pass.
 4. Run **Start Workflow**. Claude proposes a read-only plan first. The confirmation shows the starting state, permission level, checks and providers. Approve it to begin execution. A real run can consume quota on both accounts.
 5. Follow progress in the Output Channel. When it ends, inspect the saved diff, review and check results. In Git folders also compare `git diff` and `git status`. The extension never commits, stages, resets or cleans.
 
