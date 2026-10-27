@@ -1,6 +1,6 @@
 import { OrchestratorConfig } from "../configuration/config";
 import { ProcessFailure, ProcessResult, runExecutable } from "../shared/process";
-import { ClaudeGateRecord } from "../shared/types";
+import { CLAUDE_GATE_POLICY_REVISION, ClaudeGateRecord } from "../shared/types";
 import {
   StrictFinalApprovalRequest, StrictImplementationProvider, StrictImplementationRequest, StrictPhaseBReply,
   StrictPlanningCapability, StrictPlanningProvider, StrictPlanProviderReply, StrictPlanRequest, StrictProviderError,
@@ -8,6 +8,7 @@ import {
 } from "../orchestrator/strictProviders";
 import { ClaudeCliRunner } from "./claudeCliProvider";
 import { runClaudeSdkExecution, WorkflowPermissionPrompt } from "./claudeSdkExecution";
+import { claudeCliCavemanPrompt } from "../shared/cavemanSkill";
 
 const AVAILABILITY_TIMEOUT_MS = 10_000;
 const MAX_OUTPUT_BYTES = 1_048_576;
@@ -259,7 +260,8 @@ export class StrictClaudeProvider implements StrictPlanningProvider, StrictImple
         gracePeriodMs: config.terminationGracePeriodMs,
         maxOutputBytes: MAX_OUTPUT_BYTES,
         signal: request.signal,
-        stdin: prompt,
+        stdin: await claudeCliCavemanPrompt(prompt, this.options.accountDir,
+          config.cavemanStyle, ["summary"]),
       });
     } catch (error) {
       throw mapClaudeError(error);
@@ -288,7 +290,8 @@ export class StrictClaudeProvider implements StrictPlanningProvider, StrictImple
       return { available: false, freshContext: false, toolAllowlist: false, reason: "Claude CLI could not be started." };
     }
     if (!version) return { available: false, freshContext: false, toolAllowlist: false, reason: "Claude CLI did not return a version." };
-    if (this.options.gateRecord?.passed !== true || this.options.gateRecord.version !== version) {
+    if (this.options.gateRecord?.passed !== true || this.options.gateRecord.version !== version ||
+      this.options.gateRecord.policyRevision !== CLAUDE_GATE_POLICY_REVISION) {
       return {
         available: false, version, freshContext: false, toolAllowlist: false,
         reason: "The Claude settings-source isolation gate has not passed for this exact CLI version.",
@@ -374,6 +377,7 @@ function proposePrompt(request: Extract<StrictPlanRequest, { kind: "propose" }>)
   }
   return [
     "You are drafting a Strict plan. Use only Read, Glob and Grep: writes, commands, the network and MCP are unavailable to you, not merely discouraged.",
+    "Write the objective, constraints, acceptance criteria, steps and questions in full, unambiguous wording.",
     "Return only the structured plan object. Do not claim that any review, test or command was performed.",
     "If a missing user decision would materially change the implementation, add it to questions and leave its answer unset.",
     "Set expectedFilesComplete to false when you cannot list every file the task will touch.",
@@ -406,7 +410,7 @@ function evaluatePrompt(request: Extract<StrictPlanRequest, { kind: "evaluate" }
   return [
     "You are evaluating a Strict plan under read-only tools. Decide exactly once: approve, reject or revise.",
     "Echo planHash exactly as given. Approving while keeping a blocking objection, or rejecting without an objection, is invalid.",
-    "A revise decision must carry the complete revised plan.",
+    "A revise decision must carry the complete revised plan in full, unambiguous wording.",
     ...referenceRules,
     `planHash: ${request.planHash}`,
     `Authorized check ids for any revised plan: ${request.authorizedChecks.join(", ") || "none"}`,
@@ -425,10 +429,20 @@ function implementPrompt(request: StrictImplementationRequest): string {
       ? "Implement the approved plan. Change only what the plan covers."
       : "Correct the implementation. Answer every open finding with fixed or disputed and a reason.",
     "Return only the structured object. Never run a command that a model text suggested; only the configured checks run, and they run outside your turn.",
+    // The report shows this summary as its first section, so it must read as prose to a human
+    // who did not watch the turn: what changed, in which file, and why.
+    "Write summary in full sentences for a reader who did not see this turn: name each file you changed and what changed in it, then anything you deliberately left out.",
     `Approved plan hash: ${request.planHash}`,
+    `Task:\n${request.task}`,
     `Objective: ${request.plan.objective}`,
+    request.plan.constraints.length
+      ? `Constraints:\n${request.plan.constraints.map((item) => `- ${item}`).join("\n")}`
+      : "",
     `Acceptance criteria:\n${request.acceptanceCriteria.map((item) => `- ${item}`).join("\n")}`,
     `Expected files: ${request.plan.expectedFiles.join(", ") || "not listed"}`,
+    request.plan.risks.length
+      ? `Risks to avoid:\n${request.plan.risks.map((item) => `- ${item}`).join("\n")}`
+      : "",
     request.answeredQuestions.filter((item) => item.answer).length
       ? `Decisions already made:\n${request.answeredQuestions.filter((item) => item.answer).map((item) => `- ${item.question}: ${item.answer}`).join("\n")}`
       : "",
@@ -443,7 +457,6 @@ function implementPrompt(request: StrictImplementationRequest): string {
       ? `Failed checks:\n${request.failedChecks.map((check) => `- ${check.id}: ${check.output.slice(0, 2_000)}`).join("\n")}`
       : "",
     retryHint(request.retryErrors),
-    `Task:\n${request.task}`,
   ].filter(Boolean).join("\n\n");
 }
 

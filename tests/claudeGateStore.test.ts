@@ -12,7 +12,7 @@ describe("Claude gate record", () => {
     const folder = await mkdtemp(join(tmpdir(), "countersign-gate-store-test-"));
     folders.push(folder);
     const path = join(folder, "nested", "gate.json");
-    const record = { passed: true as const, version: "2.1.109 (Claude Code)", passedAt: "2026-10-19T15:20:46.931Z" };
+    const record = { passed: true as const, version: "2.1.109 (Claude Code)", passedAt: "2026-10-19T15:20:46.931Z", policyRevision: 4 };
     await saveClaudeGateRecord(record, path);
     expect(await loadClaudeGateRecord(path)).toEqual(record);
     if (process.platform !== "win32") expect((await stat(path)).mode & 0o777).toBe(0o600);
@@ -25,7 +25,7 @@ describe("Claude gate record", () => {
     folders.push(folder);
     const path = join(folder, "countersign", "gate.json");
     const legacyPath = join(folder, "legacy", "gate.json");
-    const record = { passed: true as const, version: "2.1.109 (Claude Code)", passedAt: "2026-10-19T15:20:46.931Z" };
+    const record = { passed: true as const, version: "2.1.109 (Claude Code)", passedAt: "2026-10-19T15:20:46.931Z", policyRevision: 4 };
     await saveClaudeGateRecord(record, legacyPath);
     expect(await loadClaudeGateRecord(path, legacyPath)).toEqual(record);
 
@@ -39,7 +39,7 @@ describe("Claude gate record", () => {
     folders.push(folder);
     const path = join(folder, "countersign", "gate.json");
     const legacyPath = join(folder, "legacy", "gate.json");
-    const record = { passed: true as const, version: "2.1.109 (Claude Code)", passedAt: "2026-10-19T15:20:46.931Z" };
+    const record = { passed: true as const, version: "2.1.109 (Claude Code)", passedAt: "2026-10-19T15:20:46.931Z", policyRevision: 4 };
     await saveClaudeGateRecord(record, legacyPath);
     await clearClaudeGateRecord(path, legacyPath);
     expect(await loadClaudeGateRecord(path, legacyPath)).toBeUndefined();
@@ -50,6 +50,10 @@ describe("Claude gate record", () => {
     folders.push(folder);
     const path = join(folder, "gate.json");
     await writeFile(path, '{"passed":false,"version":"2.1.109 (Claude Code)","passedAt":"now"}');
+    expect(await loadClaudeGateRecord(path)).toBeUndefined();
+    await writeFile(path, '{"passed":true,"version":"2.1.109 (Claude Code)","passedAt":"2026-10-19T15:20:46.931Z"}');
+    expect(await loadClaudeGateRecord(path)).toBeUndefined();
+    await writeFile(path, '{"passed":true,"version":"2.1.109 (Claude Code)","passedAt":"2026-10-19T15:20:46.931Z","policyRevision":3}');
     expect(await loadClaudeGateRecord(path)).toBeUndefined();
   });
 });

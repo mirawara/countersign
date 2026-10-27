@@ -1,4 +1,6 @@
-import { writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { validateConfiguration } from "../src/configuration/config";
 import { ClaudeCliProvider } from "../src/providers/claudeCliProvider";
@@ -7,10 +9,15 @@ import { AgentRequest } from "../src/shared/types";
 import { createCleanGitRepository, removeRepository } from "./helpers/git";
 
 const repositories: string[] = [];
-afterEach(async () => Promise.all(repositories.splice(0).map(removeRepository)));
-const HELP = "--print --output-format --json-schema --setting-sources --strict-mcp-config --disable-slash-commands --tools --allowedTools --permission-mode --no-session-persistence";
+const temporaryDirs: string[] = [];
+afterEach(async () => {
+  await Promise.all(repositories.splice(0).map(removeRepository));
+  await Promise.all(temporaryDirs.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+});
+const HELP = "--print --output-format --json-schema --setting-sources --strict-mcp-config --plugin-dir --disable-slash-commands --tools --allowedTools --permission-mode --no-session-persistence";
 const config = validateConfiguration({ provider: "claude", codexProvider: "real", executionPermission: "fullAccess" });
-const gateRecord = { version: "2.1.109 (Claude Code)", passedAt: "2026-10-19T00:00:00.000Z", passed: true as const };
+const gateRecord = { version: "2.1.109 (Claude Code)", passedAt: "2026-10-19T00:00:00.000Z",
+  passed: true as const, policyRevision: 4 };
 
 describe("ClaudeCliProvider", () => {
   it("blocks a changed CLI version before a model request", async () => {
@@ -56,6 +63,7 @@ describe("ClaudeCliProvider", () => {
     expect(args[args.indexOf("--tools") + 1]).toBe("default");
     expect(args).not.toContain("--allowedTools");
     expect(args).toContain("--dangerously-skip-permissions");
+    expect(args).toContain("--disable-slash-commands");
   });
 
   it("passes the selected model and effort to the Claude implementation", async () => {
@@ -134,6 +142,34 @@ describe("ClaudeCliProvider", () => {
       .toEqual(["--permission-mode", "dontAsk"]);
     expect(args).not.toContain("Edit");
     expect(invocation?.options.stdin).toContain("Q: Which API?\nA: The local API");
+  });
+
+  it("reads updated Caveman style from the installed skill while keeping CLI skills disabled", async () => {
+    const repository = await createCleanGitRepository();
+    repositories.push(repository);
+    const configDir = await mkdtemp(join(tmpdir(), "countersign-claude-profile-"));
+    temporaryDirs.push(configDir);
+    const skillDir = join(configDir, "skills", "caveman");
+    await mkdir(skillDir, { recursive: true });
+    const source = join(skillDir, "SKILL.md");
+    await writeFile(source, "Drop: filler one\n| **ultra** | short one |\nDrop caveman for: warnings\n");
+    let invocation: { args: string[]; options: ProcessOptions } | undefined;
+    const provider = new ClaudeCliProvider({ config, gateRecord, accountDir: configDir,
+      runner: async (_executable, args, options) => {
+        if (args[0] === "--version") return result(0, `${gateRecord.version}\n`);
+        invocation = { args, options };
+        return result(0, JSON.stringify({ is_error: false,
+          structured_output: { plan: "1. Edit feature.ts. 2. Run tests.", questions: [] } }));
+      },
+    });
+    await provider.proposePlan(repository, "Add a feature", [], new AbortController().signal);
+    expect(invocation?.args).toContain("--disable-slash-commands");
+    expect(invocation?.args).not.toContain("--plugin-dir");
+    expect(invocation?.options.stdin).toContain("short one");
+    await writeFile(source, "Drop: filler two\n| **ultra** | short two |\nDrop caveman for: warnings\n");
+    await provider.proposePlan(repository, "Add a feature", [], new AbortController().signal);
+    expect(invocation?.options.stdin).toContain("short two");
+    expect(invocation?.options.stdin).not.toContain("short one");
   });
 });
 

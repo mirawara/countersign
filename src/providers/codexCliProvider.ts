@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProcessFailure, ProcessOptions, ProcessResult, runExecutable } from "../shared/process";
 import { AgentRequest, AgentResult, AIProvider, Finding, ProviderStatus } from "../shared/types";
-import { isFindingSeverity } from "../configuration/config";
+import { CavemanStyle, isFindingSeverity } from "../configuration/config";
+import { codexCliCavemanPrompt } from "../shared/cavemanSkill";
 
 const MAX_PROVIDER_OUTPUT_BYTES = 1_048_576;
 const AVAILABILITY_TIMEOUT_MS = 10_000;
@@ -44,6 +45,8 @@ export type CodexCliRunner = (
 export interface CodexCliProviderOptions {
   executable: string;
   accountDir?: string;
+  /** Defaults to "auto": follow the installed Codex skill. */
+  cavemanStyle?: CavemanStyle;
   model?: string;
   effort?: string;
   timeoutMs: number;
@@ -160,7 +163,8 @@ export class CodexCliProvider implements AIProvider {
           gracePeriodMs: this.options.gracePeriodMs,
           maxOutputBytes: MAX_PROVIDER_OUTPUT_BYTES,
           signal: request.signal,
-          stdin: prompt,
+          stdin: await codexCliCavemanPrompt(prompt, this.options.accountDir,
+            this.options.cavemanStyle ?? "auto", ["summary", "each finding summary"]),
         });
       } catch (error) {
         throw mapProcessFailure(error);

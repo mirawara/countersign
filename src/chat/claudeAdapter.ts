@@ -2,10 +2,12 @@ import { randomUUID } from "node:crypto";
 import { query as queryType, type Query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { ChatAccountUsage, ChatModelOption, ChatQuota, ChatUsage } from "./types";
 import { claudeAccountUsage } from "./accountUsage";
-import { ExecutionPermission } from "../configuration/config";
+import { CavemanStyle, ExecutionPermission } from "../configuration/config";
 import { executableOutput, safeSummary, subscriptionEnvironment } from "./providerUtils";
 import { claudeToolPolicy } from "./claudeToolPolicy";
 import { CLAUDE_FULL_ACCESS_REJECTED, claudeBypassRejected } from "../shared/claudePermissions";
+import { SKILL_NAME, cavemanCoversAnswer, claudeCavemanPrompt, claudeCavemanSkillInstalled, prepareClaudeCavemanSkill }
+  from "../shared/cavemanSkill";
 
 type Sdk = { query: typeof queryType };
 
@@ -107,6 +109,7 @@ export interface ClaudeTurn {
   askPermission: (tool: string, detail: string, signal: AbortSignal) => Promise<boolean>;
   phase?: "planning";
   executionPermission?: ExecutionPermission;
+  cavemanStyle?: CavemanStyle;
 }
 
 export interface ClaudeTurnResult {
@@ -126,15 +129,23 @@ export async function runClaudeTurn(options: ClaudeTurn): Promise<ClaudeTurnResu
   const sessionId = options.sessionId ?? randomUUID();
   const planning = options.phase === "planning";
   const fullAccess = !planning && options.executionPermission === "fullAccess";
-  const tools = planning ? ["Read", "Glob", "Grep"]
-    : ["Read", "Glob", "Grep", "Edit", "Write", "Bash", "WebFetch", "WebSearch"];
+  // A chat turn is nothing but the answer, so the style either covers it or is not applied.
+  const style = options.cavemanStyle ?? "auto";
+  const terse = cavemanCoversAnswer(style, await claudeCavemanSkillInstalled(options.configDir));
+  const skill = terse ? await prepareClaudeCavemanSkill(options.configDir) : undefined;
+  const tools = planning ? ["Read", "Glob", "Grep", "Skill"]
+    : ["Read", "Glob", "Grep", "Edit", "Write", "Bash", "WebFetch", "WebSearch", "Skill"];
+  const turnPrompt = planning
+    ? `Write plans and clarification questions in full, unambiguous wording.\n\n${options.prompt}` : options.prompt;
   let active: Query;
-  try { active = query({ prompt: options.prompt, options: {
+  try { active = query({
+    prompt: terse ? claudeCavemanPrompt(turnPrompt, skill?.path, "always", []) : turnPrompt, options: {
     cwd: options.cwd, pathToClaudeCodeExecutable: options.executable,
     env: subscriptionEnvironment(options.configDir ? { CLAUDE_CONFIG_DIR: options.configDir } : undefined),
     ...(options.sessionId ? { resume: sessionId } : { sessionId }),
     settingSources: [], strictMcpConfig: true, mcpServers: {},
-    tools, allowedTools: [],
+    ...(skill ? { plugins: [{ type: "local" as const, path: skill.path }], skills: [SKILL_NAME] } : {}),
+    tools, allowedTools: skill ? ["Skill"] : [],
     disallowedTools: ["PowerShell", "Agent"],
     permissionMode: planning ? "plan" : fullAccess ? "bypassPermissions" : "default",
     ...(fullAccess ? { allowDangerouslySkipPermissions: true } : {}),
@@ -148,6 +159,7 @@ export async function runClaudeTurn(options: ClaudeTurn): Promise<ClaudeTurnResu
       if (!tools.includes(tool)) {
         return { behavior: "deny", message: "Tool is outside the chat allowlist." };
       }
+      if (tool === "Skill" && skill) return { behavior: "allow", updatedInput: input };
       if (planning) return { behavior: "deny", message: "Planning is read-only." };
       const allowed = await options.askPermission(tool, safeSummary(input), request.signal);
       return allowed && !controller.signal.aborted && !request.signal.aborted
@@ -155,6 +167,7 @@ export async function runClaudeTurn(options: ClaudeTurn): Promise<ClaudeTurnResu
     } } : {}),
   } }); } catch (error) {
     options.signal.removeEventListener("abort", onAbort);
+    await skill?.dispose();
     if (fullAccess && claudeBypassRejected(error)) throw new Error(CLAUDE_FULL_ACCESS_REJECTED, { cause: error });
     throw error;
   }
@@ -169,6 +182,9 @@ export async function runClaudeTurn(options: ClaudeTurn): Promise<ClaudeTurnResu
       const item = message as SDKMessage;
       if (item.type === "system" && item.subtype === "init") {
         if (item.apiKeySource !== "none") throw new Error("Claude did not confirm subscription authentication.");
+        if (skill && !item.skills.includes(SKILL_NAME)) {
+          throw new Error("The isolated Claude chat turn did not load the Caveman skill.");
+        }
         actualModel = item.model;
         effectiveEffort = typeof item.effort === "string" ? item.effort : undefined;
       }
@@ -199,6 +215,10 @@ export async function runClaudeTurn(options: ClaudeTurn): Promise<ClaudeTurnResu
       }
       if (item.type === "result") {
         resultSeen = true;
+        if (skill && item.subtype === "success" &&
+          item.result.startsWith(`Unknown command: /${SKILL_NAME}`)) {
+          throw new Error("Claude chat could not invoke the Caveman skill.");
+        }
         if (item.subtype !== "success" || item.is_error) {
           const diagnostics = "errors" in item && Array.isArray(item.errors) ? item.errors.join(" ") : "";
           if (fullAccess && claudeBypassRejected(diagnostics)) throw new Error(CLAUDE_FULL_ACCESS_REJECTED);
@@ -217,6 +237,7 @@ export async function runClaudeTurn(options: ClaudeTurn): Promise<ClaudeTurnResu
     throw error;
   } finally {
     active.close();
+    await skill?.dispose();
     options.signal.removeEventListener("abort", onAbort);
   }
 }

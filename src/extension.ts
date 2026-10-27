@@ -164,6 +164,7 @@ export class ExtensionRuntime {
         askPermission: request.interaction.askPermission });
       const codex = new StrictCodexProvider({ executable: config.codexExecutable, model: config.codexModel,
         effort: config.codexEffort, accountDir: accounts.codexHome, gracePeriodMs: config.terminationGracePeriodMs,
+        cavemanStyle: config.cavemanStyle,
         // Codex runs in the pinned root, which is not a path it can recognise as a
         // repository; its own repo check would refuse the turn for the wrong reason.
         skipGitRepoCheck: true });
@@ -502,6 +503,7 @@ export class ExtensionRuntime {
               effort: config.codexEffort,
               timeoutMs: config.providerTimeoutMinutes * 60_000,
               gracePeriodMs: config.terminationGracePeriodMs,
+              cavemanStyle: config.cavemanStyle,
             })
           : new MockProvider("review", config.mockScenario);
         const result = await runWorkflow({

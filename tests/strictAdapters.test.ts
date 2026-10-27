@@ -84,7 +84,7 @@ function claudeProvider(options: {
   };
   const provider = new StrictClaudeProvider({
     config: validateConfiguration({ provider: "claude", codexProvider: "real" }),
-    gateRecord: { version: options.gateVersion ?? version, passedAt: new Date().toISOString(), passed: true },
+    gateRecord: { version: options.gateVersion ?? version, passedAt: new Date().toISOString(), passed: true, policyRevision: 4 },
     runner,
   });
   return { provider, calls };
@@ -133,7 +133,7 @@ describe("Strict Claude adapter", () => {
     const turn = calls.at(-1);
     expect(turn?.args).toEqual(expect.arrayContaining([
       "--print", "--output-format", "json", "--json-schema", "--setting-sources", "--strict-mcp-config",
-      "--disable-slash-commands", "--no-session-persistence", "--permission-mode", "dontAsk",
+      "--no-session-persistence", "--permission-mode", "dontAsk",
       "--tools", "Read,Glob,Grep", "--allowedTools", "Read,Glob,Grep",
     ]));
     expect(turn?.args).not.toContain("--resume");
@@ -203,7 +203,7 @@ describe("Strict Claude adapter", () => {
     };
     const provider = new StrictClaudeProvider({
       config: validateConfiguration({ provider: "claude", codexProvider: "real" }),
-      gateRecord: { version: "2.1.109", passedAt: new Date().toISOString(), passed: true },
+      gateRecord: { version: "2.1.109", passedAt: new Date().toISOString(), passed: true, policyRevision: 4 },
       runner,
     });
     const reply = await provider.request({ ...planRequest });
@@ -220,7 +220,7 @@ describe("Strict Claude adapter", () => {
     };
     const provider = new StrictClaudeProvider({
       config: validateConfiguration({ provider: "claude", codexProvider: "real" }),
-      gateRecord: { version: "2.1.109", passedAt: new Date().toISOString(), passed: true },
+      gateRecord: { version: "2.1.109", passedAt: new Date().toISOString(), passed: true, policyRevision: 4 },
       runner,
     });
     await provider.checkPlanningCapability(controller.signal);

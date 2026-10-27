@@ -2,6 +2,8 @@ import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProcessFailure, ProcessOptions, ProcessResult, runExecutable } from "../shared/process";
+import { CavemanStyle } from "../configuration/config";
+import { codexCliCavemanPrompt } from "../shared/cavemanSkill";
 import {
   StrictPlanningCapability, StrictPlanningProvider, StrictPlanProviderReply, StrictPlanRequest, StrictPhaseBReply,
   StrictProviderError, StrictReviewProvider, StrictReviewRequest, StrictSessionCapability, StrictSessionKind,
@@ -106,6 +108,8 @@ export type CodexRunner = (executable: string, args: string[], options: ProcessO
 export interface StrictCodexProviderOptions {
   executable: string;
   accountDir?: string;
+  /** Defaults to "auto": follow the installed Codex skill. */
+  cavemanStyle?: CavemanStyle;
   model?: string;
   effort?: string;
   gracePeriodMs: number;
@@ -195,7 +199,8 @@ export class StrictCodexProvider implements StrictPlanningProvider, StrictReview
           gracePeriodMs: this.options.gracePeriodMs,
           maxOutputBytes: MAX_OUTPUT_BYTES,
           signal: request.signal,
-          stdin: prompt,
+          stdin: await codexCliCavemanPrompt(prompt, this.options.accountDir,
+            this.options.cavemanStyle ?? "auto", ["summary", "each finding summary"]),
         });
       } catch (error) {
         throw mapCodexError(error);

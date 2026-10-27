@@ -130,9 +130,27 @@
       "properties": {
         "countersign.executionPermission": {
           "type": "string",
-          "enum": ["askBeforeChange", "fullAccess"],
+          "enum": [
+            "askBeforeChange",
+            "fullAccess"
+          ],
           "default": "askBeforeChange",
           "description": "After mandatory plan approval: ask before Claude changes, commands or network tools, or grant full system access for the task. Sidebar selection overrides this setting."
+        },
+        "countersign.cavemanStyle": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "always",
+            "internalOnly"
+          ],
+          "enumDescriptions": [
+            "Follow the selected CLI profile: with the Caveman skill installed the answer you read is terse too; without it only the internal provider exchanges are compressed.",
+            "Caveman also covers the answer you read: the Strict implementation summary, review summaries and chat replies.",
+            "Only the internal provider exchanges are compressed. The answer you read is always full prose."
+          ],
+          "default": "auto",
+          "description": "Who the Caveman terse style applies to. Internal provider exchanges are always compressed to save tokens; this setting decides whether the answer you read is compressed as well."
         },
         "countersign.claudeExecutable": {
           "type": "string",

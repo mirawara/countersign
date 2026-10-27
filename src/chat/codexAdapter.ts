@@ -2,7 +2,8 @@ import { ChildProcess, spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { ChatAccountUsage, ChatModelOption } from "./types";
 import { codexAccountUsage } from "./accountUsage";
-import { ExecutionPermission } from "../configuration/config";
+import { cavemanCoversAnswer, codexCavemanPrompt } from "../shared/cavemanSkill";
+import { CavemanStyle, ExecutionPermission } from "../configuration/config";
 import { executableOutput, safeSummary, subscriptionEnvironment } from "./providerUtils";
 
 type Json = Record<string, unknown>;
@@ -180,6 +181,23 @@ export interface CodexTurn {
   askPermission: (kind: "command" | "fileChange", detail: string, signal: AbortSignal) => Promise<boolean>;
   phase?: "planning";
   executionPermission?: ExecutionPermission;
+  cavemanStyle?: CavemanStyle;
+}
+
+async function findCavemanSkill(server: CodexAppServer, cwd: string): Promise<{ name: string; path: string } | undefined> {
+  try {
+    const reply = await server.request("skills/list", { cwds: [cwd], forceReload: true }, 8_000);
+    const data = reply.data;
+    if (!Array.isArray(data)) return undefined;
+    const item = data.find((entry) => get(entry, "cwd") === cwd);
+    const skills = get(item, "skills");
+    if (!Array.isArray(skills)) return undefined;
+    const selected = skills.find((entry) => get(entry, "name") === "caveman:caveman" && get(entry, "enabled") === true)
+      ?? skills.find((entry) => get(entry, "name") === "caveman" && get(entry, "enabled") === true);
+    const name = get(selected, "name");
+    const path = get(selected, "path");
+    return typeof name === "string" && typeof path === "string" ? { name, path } : undefined;
+  } catch { return undefined; }
 }
 
 export async function runCodexTurn(options: CodexTurn): Promise<{ sessionId: string }> {
@@ -201,6 +219,10 @@ export async function runCodexTurn(options: CodexTurn): Promise<{ sessionId: str
     await server.initialize();
     const account = await server.request("account/read", { refreshToken: false });
     if (get(account.account, "type") !== "chatgpt") throw new Error("Codex is not signed in with ChatGPT.");
+    // A chat turn is nothing but the answer, so the style either covers it or is not applied.
+    const style = options.cavemanStyle ?? "auto";
+    const caveman = style === "internalOnly" ? undefined : await findCavemanSkill(server, options.cwd);
+    const terse = cavemanCoversAnswer(style, caveman !== undefined);
     if (threadId) await server.request("thread/resume", { threadId });
     else {
       const started = await server.request("thread/start", { cwd: options.cwd, model: options.model,
@@ -209,7 +231,10 @@ export async function runCodexTurn(options: CodexTurn): Promise<{ sessionId: str
       if (!threadId) throw new Error("Codex did not return a thread ID.");
     }
     const started = await server.request("turn/start", { threadId,
-      input: [{ type: "text", text: options.prompt }], cwd: options.cwd, model: options.model,
+      input: [
+        { type: "text", text: terse ? codexCavemanPrompt(options.prompt, caveman?.name, "always", []) : options.prompt },
+        ...(terse && caveman ? [{ type: "skill", name: caveman.name, path: caveman.path }] : []),
+      ], cwd: options.cwd, model: options.model,
       ...(options.effort ? { effort: options.effort } : {}),
       approvalPolicy, sandboxPolicy,
     }, 30_000);

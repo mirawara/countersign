@@ -2,8 +2,9 @@ import { OrchestratorConfig } from "../configuration/config";
 import { readGitChanges } from "../context/gitChanges";
 import { ProcessFailure, ProcessOptions, ProcessResult, runExecutable } from "../shared/process";
 import { CLAUDE_FULL_ACCESS_REJECTED, claudeBypassRejected } from "../shared/claudePermissions";
-import { AgentRequest, AgentResult, AIProvider, ClaudeGateRecord, Finding, ProviderStatus } from "../shared/types";
+import { AgentRequest, AgentResult, AIProvider, CLAUDE_GATE_POLICY_REVISION, ClaudeGateRecord, Finding, ProviderStatus } from "../shared/types";
 import { runClaudeSdkExecution, WorkflowPermissionPrompt } from "./claudeSdkExecution";
+import { claudeCliCavemanPrompt } from "../shared/cavemanSkill";
 
 const AVAILABILITY_TIMEOUT_MS = 10_000;
 const MAX_OUTPUT_BYTES = 1_048_576;
@@ -67,7 +68,8 @@ export class ClaudeCliProvider implements AIProvider {
     try {
       const version = await this.readVersion();
       if (!version) return { available: false, reason: "Claude CLI did not return a version." };
-      if (this.options.gateRecord?.passed !== true || this.options.gateRecord.version !== version) {
+      if (this.options.gateRecord?.passed !== true || this.options.gateRecord.version !== version ||
+        this.options.gateRecord.policyRevision !== CLAUDE_GATE_POLICY_REVISION) {
         return { available: false, version, reason: "The Claude settings-source isolation gate has not passed for this exact CLI version." };
       }
       const result = await this.run(this.options.config.claudeExecutable, ["--help"], {
@@ -89,35 +91,33 @@ export class ClaudeCliProvider implements AIProvider {
     if (request.mode === "review") throw new ClaudeProviderError("capability_missing", "Claude CLI does not perform review in this workflow.");
     if (request.signal.aborted) throw new ClaudeProviderError("cancelled", "Claude task was cancelled.");
     const version = await this.readVersion();
-    if (!version || this.options.gateRecord?.version !== version || this.options.gateRecord.passed !== true) {
+    if (!version || this.options.gateRecord?.version !== version || this.options.gateRecord.passed !== true ||
+      this.options.gateRecord.policyRevision !== CLAUDE_GATE_POLICY_REVISION) {
       throw new ClaudeProviderError("gate_missing", "Claude CLI version changed or the settings-source gate has not passed.");
     }
     const { config } = this.options;
     const fullAccess = config.executionPermission === "fullAccess";
-    const args = [
-      "--print", "--output-format", "json", "--json-schema", JSON.stringify(RESPONSE_SCHEMA),
-      "--setting-sources", "", "--strict-mcp-config", "--disable-slash-commands",
-      ...(fullAccess ? ["--dangerously-skip-permissions"] : ["--permission-mode", "default"]),
-      "--no-session-persistence",
-      "--tools", fullAccess ? "default" : config.claudeAllowedTools.join(","),
-      ...(fullAccess ? [] : ["--allowedTools", config.claudeAllowedTools.join(",")]),
-      ...(config.claudeModel ? ["--model", config.claudeModel] : []),
-      ...(config.claudeEffort ? ["--effort", config.claudeEffort] : []),
-    ];
     let result: ProcessResult;
     try {
       if (!fullAccess) {
         if (!this.options.askPermission) throw new ClaudeProviderError("permissions", "Ask before change needs a permission prompt in the chat or VS Code window.");
         result = { exitCode: 0, stderr: "", stdout: await (this.options.sdkExecution ?? runClaudeSdkExecution)(config, request,
           buildPrompt(request, true), RESPONSE_SCHEMA, this.options.askPermission, this.options.accountDir) };
-      } else result = await this.run(config.claudeExecutable, args, {
+      } else result = await this.run(config.claudeExecutable, [
+        "--print", "--output-format", "json", "--json-schema", JSON.stringify(RESPONSE_SCHEMA),
+        "--setting-sources", "", "--strict-mcp-config", "--disable-slash-commands",
+        "--dangerously-skip-permissions", "--no-session-persistence", "--tools", "default",
+        ...(config.claudeModel ? ["--model", config.claudeModel] : []),
+        ...(config.claudeEffort ? ["--effort", config.claudeEffort] : []),
+      ], {
         cwd: request.repository,
         env: this.options.accountDir ? { CLAUDE_CONFIG_DIR: this.options.accountDir } : undefined,
         timeoutMs: config.providerTimeoutMinutes * 60_000,
         gracePeriodMs: config.terminationGracePeriodMs,
         maxOutputBytes: MAX_OUTPUT_BYTES,
         signal: request.signal,
-        stdin: buildPrompt(request, false),
+        stdin: await claudeCliCavemanPrompt(buildPrompt(request, false), this.options.accountDir,
+          config.cavemanStyle, ["summary", "question"]),
       });
     } catch (error) {
       if (error instanceof ClaudeProviderError) throw error;
@@ -148,7 +148,8 @@ export class ClaudeCliProvider implements AIProvider {
     signal: AbortSignal): Promise<ProposedPlan> {
     if (signal.aborted) throw new ClaudeProviderError("cancelled", "Planning was cancelled.");
     const version = await this.readVersion();
-    if (!version || this.options.gateRecord?.version !== version || this.options.gateRecord.passed !== true) {
+    if (!version || this.options.gateRecord?.version !== version || this.options.gateRecord.passed !== true ||
+      this.options.gateRecord.policyRevision !== CLAUDE_GATE_POLICY_REVISION) {
       throw new ClaudeProviderError("gate_missing", "Claude CLI version changed or the settings-source gate has not passed.");
     }
     const { config } = this.options;
@@ -167,13 +168,15 @@ export class ClaudeCliProvider implements AIProvider {
         env: this.options.accountDir ? { CLAUDE_CONFIG_DIR: this.options.accountDir } : undefined,
         gracePeriodMs: config.terminationGracePeriodMs, maxOutputBytes: MAX_OUTPUT_BYTES,
         signal,
-        stdin: [
+        stdin: await claudeCliCavemanPrompt([
           "Plan this task using only Read, Glob and Grep. Do not edit files, run commands, access the network or use MCP.",
+          "Write the plan and clarification questions in full, unambiguous wording.",
           "If a missing user decision materially changes the implementation, ask up to three precise questions and leave plan empty.",
           "Otherwise return a concrete plan with files, steps and checks, and an empty questions array. Do not claim a review was performed.",
           `Task:\n${task}`,
           clarifications.length ? `User answers:\n${clarifications.map(({ question, answer }) => `Q: ${question}\nA: ${answer}`).join("\n")}` : "",
-        ].filter(Boolean).join("\n\n"),
+        ].filter(Boolean).join("\n\n"), this.options.accountDir,
+          config.cavemanStyle, ["plan", "questions"]),
       });
     } catch (error) { throw mapProcessFailure(error); }
     if (result.exitCode !== 0) throw classifyFailure(result.stderr, result.exitCode);
@@ -203,7 +206,7 @@ export class ClaudeCliProvider implements AIProvider {
 }
 
 export function requiredCapabilities(help: string): string[] {
-  const required = ["--print", "--output-format", "--json-schema", "--setting-sources", "--strict-mcp-config", "--disable-slash-commands", "--tools", "--allowedTools", "--permission-mode", "--no-session-persistence"];
+  const required = ["--print", "--output-format", "--json-schema", "--setting-sources", "--strict-mcp-config", "--plugin-dir", "--disable-slash-commands", "--tools", "--allowedTools", "--permission-mode", "--no-session-persistence"];
   return required.filter((flag) => !new RegExp(`(?:^|[\\s,])${flag}(?=[\\s,]|$)`, "m").test(help));
 }
 

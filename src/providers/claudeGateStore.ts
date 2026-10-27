@@ -2,7 +2,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { ClaudeGateRecord } from "../shared/types";
+import { CLAUDE_GATE_POLICY_REVISION, ClaudeGateRecord } from "../shared/types";
 
 const RECORD_PATH = join(homedir(), ".countersign", "claude-gate.json");
 /** Where the record lived before the extension was renamed; read so a passed gate survives. */
@@ -37,9 +37,11 @@ async function readRecord(path: string): Promise<ClaudeGateRecord | undefined> {
   catch { return undefined; }
   if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
   const record = value as Record<string, unknown>;
-  if (record.passed !== true || typeof record.version !== "string" || record.version.length === 0 || record.version.length > 128
+  if (record.passed !== true || record.policyRevision !== CLAUDE_GATE_POLICY_REVISION ||
+    typeof record.version !== "string" || record.version.length === 0 || record.version.length > 128
     || typeof record.passedAt !== "string" || !Number.isFinite(Date.parse(record.passedAt))) return undefined;
-  return { passed: true, version: record.version, passedAt: record.passedAt };
+  return { passed: true, version: record.version, passedAt: record.passedAt,
+    policyRevision: CLAUDE_GATE_POLICY_REVISION };
 }
 
 export async function saveClaudeGateRecord(record: ClaudeGateRecord, path = RECORD_PATH, legacyPath?: string): Promise<void> {

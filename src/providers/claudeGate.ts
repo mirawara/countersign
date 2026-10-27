@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OrchestratorConfig } from "../configuration/config";
 import { ProcessOptions, ProcessResult, runExecutable } from "../shared/process";
-import { ClaudeGateRecord } from "../shared/types";
+import { CLAUDE_GATE_POLICY_REVISION, ClaudeGateRecord } from "../shared/types";
 import { requiredCapabilities } from "./claudeCliProvider";
 
 type Runner = (executable: string, args: string[], options: ProcessOptions) => Promise<ProcessResult>;
@@ -39,29 +39,36 @@ export async function verifyClaudeSettingsGate(
       hooks: { UserPromptSubmit: [{ hooks: [{ type: "command", command: `${shellQuote(process.execPath)} ${shellQuote(script)}` }] }] },
     };
     await writeFile(join(claudeDir, "settings.json"), JSON.stringify(settings), { mode: 0o600 });
-
+    const plugin = join(directory, "style-plugin");
+    const skillName = "countersign-gate:countersign-gate";
+    await mkdir(join(plugin, ".claude-plugin"), { recursive: true });
+    await mkdir(join(plugin, "skills", "countersign-gate"), { recursive: true });
+    await writeFile(join(plugin, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "countersign-gate" }));
+    await writeFile(join(plugin, "skills", "countersign-gate", "SKILL.md"),
+      "---\nname: countersign-gate\ndescription: Internal isolation probe\n---\nReply exactly CAVEMAN_GATE_OK.\n");
     const common = [
       "--print", "--output-format", "json",
-      "--strict-mcp-config", "--disable-slash-commands", "--permission-mode", "default",
+      "--strict-mcp-config", "--plugin-dir", plugin, "--permission-mode", "default",
       "--no-session-persistence", "--tools", "", "--allowedTools", "",
     ];
     const control = await runner(config.claudeExecutable, common, {
-      ...processOptions(directory, config, signal, accountDir), stdin: "Reply with exactly OK.",
+      ...processOptions(directory, config, signal, accountDir), stdin: `/${skillName}`,
     });
-    if (!validResponse(control) || !(await exists(marker))) {
-      throw new ClaudeGateError("Control run did not complete with the project hook firing; the gate remains closed.");
+    if (!responseText(control)?.includes("CAVEMAN_GATE_OK") || !(await exists(marker))) {
+      throw new ClaudeGateError("Control run did not load the probe skill or fire the project hook; the gate remains closed.");
     }
     await unlink(marker);
-    const isolated = await runner(config.claudeExecutable, [...common, "--setting-sources", ""], {
-      ...processOptions(directory, config, signal, accountDir), stdin: "Reply with exactly OK.",
+    const isolated = await runner(config.claudeExecutable, [...common, "--setting-sources", "", "--disable-slash-commands"], {
+      ...processOptions(directory, config, signal, accountDir), stdin: `/${skillName}`,
     });
-    if (!validResponse(isolated) || await exists(marker)) {
-      throw new ClaudeGateError("The isolated run failed or a project hook still fired; the gate remains closed.");
+    if (!responseText(isolated)?.startsWith("Unknown command") || await exists(marker)) {
+      throw new ClaudeGateError("The isolated run did not disable skills or a project hook still fired; the gate remains closed.");
     }
     if (await readVersion(config, runner, accountDir) !== version) {
       throw new ClaudeGateError("Claude CLI version changed during the gate test.");
     }
-    return { version, passedAt: new Date().toISOString(), passed: true };
+    return { version, passedAt: new Date().toISOString(), passed: true,
+      policyRevision: CLAUDE_GATE_POLICY_REVISION };
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -87,13 +94,14 @@ async function readVersion(config: OrchestratorConfig, runner: Runner, accountDi
   return result.exitCode === 0 ? result.stdout.trim().split(/\r?\n/, 1)[0] : undefined;
 }
 
-function validResponse(result: ProcessResult): boolean {
-  if (result.exitCode !== 0) return false;
+function responseText(result: ProcessResult): string | undefined {
+  if (result.exitCode !== 0) return undefined;
   try {
     const response: unknown = JSON.parse(result.stdout);
-    return typeof response === "object" && response !== null && "is_error" in response && response.is_error === false;
+    return typeof response === "object" && response !== null && "is_error" in response && response.is_error === false &&
+      "result" in response && typeof response.result === "string" ? response.result : undefined;
   } catch {
-    return false;
+    return undefined;
   }
 }
 

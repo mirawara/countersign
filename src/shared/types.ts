@@ -208,8 +208,11 @@ export interface BalancedWorkflowResult {
 /** Discriminated on the result's own mode: a Balanced result carries no Strict fields. */
 export type WorkflowResult = BalancedWorkflowResult | StrictWorkflowResult;
 
+export const CLAUDE_GATE_POLICY_REVISION = 4;
+
 export interface ClaudeGateRecord {
   version: string;
   passedAt: string;
   passed: true;
+  policyRevision: number;
 }

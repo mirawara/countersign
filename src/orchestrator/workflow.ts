@@ -129,8 +129,10 @@ export async function runWorkflow(input: WorkflowInput): Promise<BalancedWorkflo
     emit(phase, `User answered a ${phase} question; the agent is continuing.`);
   };
 
-  const executionTask = [input.task,
-    input.clarifications?.length ? `Planning decisions:\n${input.clarifications.map(({ question, answer }) => `Q: ${question}\nA: ${answer}`).join("\n")}` : "",
+  const executionTask = [
+    input.task,
+    input.clarifications?.length
+      ? `Planning decisions:\n${input.clarifications.map(({ question, answer }) => `Q: ${question}\nA: ${answer}`).join("\n")}` : "",
     input.plan ? `Approved plan (follow this; ask before materially changing it):\n${input.plan}` : "",
   ].filter(Boolean).join("\n\n");
 

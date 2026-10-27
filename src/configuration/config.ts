@@ -4,6 +4,12 @@ import { FindingSeverity } from "../shared/types";
 export type ImplementationProvider = "mock" | "claude";
 export type CodexProviderMode = "mock" | "real";
 export type ExecutionPermission = "askBeforeChange" | "fullAccess";
+/**
+ * Who the Caveman style applies to. "auto" follows the selected CLI profile: with the skill
+ * installed the user already chose terse output, so it also covers the answer they read;
+ * without it only the internal provider exchanges are compressed.
+ */
+export type CavemanStyle = "auto" | "always" | "internalOnly";
 
 export type WorkflowModelSelection = Pick<OrchestratorConfig,
   "claudeModel" | "claudeEffort" | "codexModel" | "codexEffort">;
@@ -11,6 +17,7 @@ export type WorkflowProviderSelection = Pick<OrchestratorConfig, "provider" | "c
 
 export interface OrchestratorConfig {
   executionPermission: ExecutionPermission;
+  cavemanStyle: CavemanStyle;
   provider: ImplementationProvider;
   claudeExecutable: string;
   claudeModel: string;
@@ -38,6 +45,10 @@ export function validateConfiguration(raw: RawConfiguration): OrchestratorConfig
   const executionPermission = raw.executionPermission ?? "askBeforeChange";
   if (executionPermission !== "askBeforeChange" && executionPermission !== "fullAccess") {
     throw new Error("countersign.executionPermission must be 'askBeforeChange' or 'fullAccess'.");
+  }
+  const cavemanStyle = raw.cavemanStyle ?? "auto";
+  if (cavemanStyle !== "auto" && cavemanStyle !== "always" && cavemanStyle !== "internalOnly") {
+    throw new Error("countersign.cavemanStyle must be 'auto', 'always' or 'internalOnly'.");
   }
   const provider = raw.provider ?? "claude";
   if (provider !== "mock" && provider !== "claude") {
@@ -102,6 +113,7 @@ export function validateConfiguration(raw: RawConfiguration): OrchestratorConfig
 
   return {
     executionPermission,
+    cavemanStyle,
     provider,
     claudeExecutable,
     claudeModel,

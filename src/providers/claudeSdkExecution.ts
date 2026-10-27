@@ -6,6 +6,7 @@ import { VERIFIED_CLAUDE_CHAT_CLI, VERIFIED_CLAUDE_CHAT_SDK, chatGateMatches, sd
 import { loadClaudeChatGate } from "../chat/claudeChatGateStore";
 import { ClaudeProviderError } from "./claudeCliProvider";
 import { AgentRequest } from "../shared/types";
+import { SKILL_NAME, claudeCavemanPrompt, prepareClaudeCavemanSkill } from "../shared/cavemanSkill";
 
 export type WorkflowPermissionPrompt = (tool: string, detail: string, signal: AbortSignal) => Promise<boolean>;
 
@@ -23,34 +24,45 @@ export async function runClaudeSdkExecution(config: OrchestratorConfig, request:
   request.signal.addEventListener("abort", onAbort, { once: true });
   if (request.signal.aborted) controller.abort();
   const timer = unlimited ? undefined : setTimeout(() => controller.abort(), config.providerTimeoutMinutes * 60_000);
-  const active = query({ prompt, options: {
-    cwd: request.repository,
-    pathToClaudeCodeExecutable: config.claudeExecutable,
-    env: subscriptionEnvironment(configDir ? { CLAUDE_CONFIG_DIR: configDir } : undefined),
-    settingSources: [], strictMcpConfig: true, mcpServers: {},
-    tools: ["Read", "Glob", "Grep", "Edit", "Write", "Bash", "WebFetch", "WebSearch"],
-    allowedTools: [], permissionMode: "default", persistSession: false,
-    hooks: { PreToolUse: [{ hooks: [async (input) => claudeToolPolicy(request.repository, input, true)] }] },
-    canUseTool: async (tool, input, options) => {
-      if (controller.signal.aborted || options.signal.aborted) return { behavior: "deny", message: "Workflow cancelled." };
-      const allowed = await askPermission(tool, safeSummary(input), options.signal);
-      return allowed && !controller.signal.aborted && !options.signal.aborted
-        ? { behavior: "allow", updatedInput: input } : { behavior: "deny", message: "Permission declined." };
-    },
-    outputFormat: { type: "json_schema", schema },
-    ...(config.claudeModel ? { model: config.claudeModel } : {}),
-    ...(config.claudeEffort ? { effort: config.claudeEffort as "low" | "medium" | "high" | "max" } : {}),
-    ...(unlimited ? {} : { maxTurns: 30 }), abortController: controller,
-  } });
+  const skill = await prepareClaudeCavemanSkill(configDir);
+  let active: ReturnType<typeof query> | undefined;
   let result: string | undefined;
   let subscriptionConfirmed = false;
   try {
+    active = query({ prompt: claudeCavemanPrompt(prompt, skill?.path, config.cavemanStyle, ["summary", "question"]), options: {
+      cwd: request.repository,
+      pathToClaudeCodeExecutable: config.claudeExecutable,
+      env: subscriptionEnvironment(configDir ? { CLAUDE_CONFIG_DIR: configDir } : undefined),
+      settingSources: [], strictMcpConfig: true, mcpServers: {},
+      ...(skill ? { plugins: [{ type: "local" as const, path: skill.path }], skills: [SKILL_NAME] } : {}),
+      tools: ["Read", "Glob", "Grep", "Edit", "Write", "Bash", "WebFetch", "WebSearch", "Skill"],
+      allowedTools: skill ? ["Skill"] : [], permissionMode: "default", persistSession: false,
+      hooks: { PreToolUse: [{ hooks: [async (input) => claudeToolPolicy(request.repository, input, true)] }] },
+      canUseTool: async (tool, input, options) => {
+        if (controller.signal.aborted || options.signal.aborted) return { behavior: "deny", message: "Workflow cancelled." };
+        if (tool === "Skill" && skill) return { behavior: "allow", updatedInput: input };
+        const allowed = await askPermission(tool, safeSummary(input), options.signal);
+        return allowed && !controller.signal.aborted && !options.signal.aborted
+          ? { behavior: "allow", updatedInput: input } : { behavior: "deny", message: "Permission declined." };
+      },
+      outputFormat: { type: "json_schema", schema },
+      ...(config.claudeModel ? { model: config.claudeModel } : {}),
+      ...(config.claudeEffort ? { effort: config.claudeEffort as "low" | "medium" | "high" | "max" } : {}),
+      ...(unlimited ? {} : { maxTurns: 30 }), abortController: controller,
+    } });
     for await (const message of active) {
       if (message.type === "system" && message.subtype === "init") {
         if (message.apiKeySource !== "none") throw new ClaudeProviderError("authentication", "Claude did not confirm subscription authentication.");
+        if (skill && !message.skills.includes(SKILL_NAME)) {
+          throw new ClaudeProviderError("capability_missing", "The isolated Claude SDK turn did not load the Caveman skill.");
+        }
         subscriptionConfirmed = true;
       }
       if (message.type === "result") {
+        // A plugin the CLI refuses answers the slash command instead of the task, with exit 0.
+        if (skill && message.subtype === "success" && message.result.startsWith(`Unknown command: /${SKILL_NAME}`)) {
+          throw new ClaudeProviderError("capability_missing", "Claude SDK could not invoke the Caveman skill.");
+        }
         if (message.subtype !== "success" || message.is_error) {
           throw new ClaudeProviderError("execution", `Claude SDK turn ended: ${message.subtype}.`);
         }
@@ -64,6 +76,7 @@ export async function runClaudeSdkExecution(config: OrchestratorConfig, request:
   } finally {
     if (timer) clearTimeout(timer);
     request.signal.removeEventListener("abort", onAbort);
-    active.close();
+    active?.close();
+    await skill?.dispose();
   }
 }
