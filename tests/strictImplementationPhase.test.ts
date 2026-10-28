@@ -19,7 +19,13 @@ import { resolveStrictLimits, StrictLimitOverrides } from "../src/shared/strictL
 import { CheckResult, LocalCheck, StrictWorkflowEvent } from "../src/shared/types";
 
 const folders: string[] = [];
-afterEach(async () => Promise.all(folders.splice(0).map((folder) => rm(folder, { recursive: true, force: true }))));
+// Each harness pins its root with an open directory descriptor. Closing the workspace is
+// the product's own release path; without it Node reports the handles as collected late.
+const workspaces: { close: () => Promise<void> }[] = [];
+afterEach(async () => {
+  await Promise.all(workspaces.splice(0).map((workspace) => workspace.close().catch(() => undefined)));
+  await Promise.all(folders.splice(0).map((folder) => rm(folder, { recursive: true, force: true })));
+});
 
 const PLAN: StrictPlan = {
   schemaVersion: STRICT_PLAN_SCHEMA_VERSION,
@@ -209,6 +215,7 @@ async function harness(options: {
     folder: root, limits, ...(options.contentBudgetBytes === undefined ? {} : { contentBudgetBytes: options.contentBudgetBytes }),
   });
   if (!created.ok) throw new Error(`baseline failed: ${created.failure.message}`);
+  workspaces.push(created.workspace);
 
   const claude = new FakeClaude(
     options.implement,

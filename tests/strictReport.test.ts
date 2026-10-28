@@ -117,7 +117,11 @@ function core(): StrictResultCore {
     pauses: [{ reason: "stall", fromState: "reviewing", startedAt: "2026-10-22T09:33:00.000Z", resumedAt: "2026-10-22T09:35:00.000Z", resumable: true }],
     marker: { status: "owned", outcome: "finished", timestamp: "2026-10-22T09:39:00.000Z", clearedByCommand: false },
     events: [{ mode: "strict", taskId: "strict-task-id", state: "planning", phase: "plan", message: "Planning started.", timestamp: "2026-10-22T09:05:00.000Z" }],
-    metrics: [{ provider: "claude", inputTokens: 100, outputTokens: 200, estimatedCostUsd: 0.4 }],
+    metrics: [
+      { provider: "claude", inputTokens: 100, cacheReadInputTokens: 700, cacheCreationInputTokens: 200,
+        outputTokens: 200, estimatedCostUsd: 0.4 },
+      { provider: "codex", inputTokens: 50, outputTokens: 60 },
+    ],
     selectedModels: { claudeModel: "opus", claudeEffort: "high", codexModel: "gpt", codexEffort: "medium" },
     executionPermission: "askBeforeChange",
   };
@@ -173,8 +177,11 @@ describe("Strict report contract", () => {
       "stall pause from reviewing",
       "Status: owned; outcome finished; written 2026-10-22T09:39:00.000Z.",
       "Countersign: Clear Strict interruption marker deletes only that metadata",
-      "claude: 100 input tokens, 200 output tokens",
-      "arbitrary placeholders",
+      // Cache reads and writes are most of the input on an expensive turn; a single
+      // "input tokens" figure that left them out understated it.
+      "claude: 1000 total input tokens (100 uncached, 700 cache read, 200 cache write); 200 output tokens",
+      "codex: 50 input tokens; 60 output tokens; unavailable USD API price estimate",
+      "No automatic phase request, active-time, review-cycle or per-provider-request timeout is configured.",
       "- No ceiling was reached.",
       "Active time stops while the task waits for a human approval",
       "Changes confined to the policy-excluded paths listed above are expected and block nothing",

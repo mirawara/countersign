@@ -9,12 +9,14 @@ const SCAN_LIMIT_IDS: StrictLimitId[] = [
 ];
 
 describe("Strict limits", () => {
-  it("leaves enough phase A active time for every allowed provider request", () => {
-    expect(STRICT_LIMIT_DEFAULTS.planPhase).toEqual({ maxProviderRequests: 8, maxActiveMinutes: 80 });
+  it("starts a task with no automatic request, time or review-cycle stop", () => {
+    // Zero means "no ceiling", not "nothing allowed": only cancellation, a provider failure
+    // and the no-progress pause end a task on their own.
+    expect(STRICT_LIMIT_DEFAULTS.planPhase).toEqual({ maxProviderRequests: 0, maxActiveMinutes: 0 });
     expect(STRICT_LIMIT_DEFAULTS.implementationPhase).toEqual({
-      maxProviderRequests: 18, maxActiveMinutes: 90, maxReviewCycles: 6, stallCycles: 2,
+      maxProviderRequests: 0, maxActiveMinutes: 0, maxReviewCycles: 0, stallCycles: 2,
     });
-    expect(STRICT_LIMIT_DEFAULTS.providerRequestTimeoutMinutes).toBe(10);
+    expect(STRICT_LIMIT_DEFAULTS.providerRequestTimeoutMinutes).toBe(0);
     expect(STRICT_LIMIT_DEFAULTS.maxStructuredRetries).toBe(2);
     expect(STRICT_LIMIT_DEFAULTS.maxCanonicalPlanBytes).toBe(65_536);
     expect(STRICT_LIMIT_DEFAULTS.maxStructuredResponseBytes).toBe(131_072);
@@ -71,15 +73,20 @@ describe("Strict limits", () => {
     expect(strictLimitValue(limits, "scan.maxNewFileBytes")).toBe(16_384);
   });
 
-  it("reads back every configurable limit and never leaves one unbounded", () => {
+  it("reads back every configurable limit, and bounds the ones a task overrides", () => {
     const limits = resolveStrictLimits();
     const ids = Object.keys(STRICT_LIMIT_RANGES) as StrictConfigurableLimitId[];
     for (const id of ids) {
       const range = STRICT_LIMIT_RANGES[id];
       const value = strictLimitValue(limits, id);
       expect(Number.isFinite(range.max), id).toBe(true);
-      expect(value, id).toBeGreaterThanOrEqual(range.min);
-      expect(value, id).toBeLessThanOrEqual(range.max);
+      // A default of zero is the switched-off ceiling; anything else must sit in its range.
+      if (value !== 0) {
+        expect(value, id).toBeGreaterThanOrEqual(range.min);
+        expect(value, id).toBeLessThanOrEqual(range.max);
+      }
+      const overridden = strictLimitValue(resolveStrictLimits({ [id]: range.min } as StrictLimitOverrides), id);
+      expect(overridden, id).toBe(range.min);
       expect(strictLimitUnit(id), id).toBe(range.unit);
     }
     for (const id of SCAN_LIMIT_IDS) {

@@ -10,7 +10,21 @@ import { createWorkspaceChanges } from "../src/context/workspaceChanges";
 import { resolveStrictLimits, StrictLimitOverrides } from "../src/shared/strictLimits";
 
 const folders: string[] = [];
-afterEach(async () => Promise.all(folders.splice(0).map((folder) => rm(folder, { recursive: true, force: true }))));
+// Every workspace pins its root with an open directory descriptor until it is closed.
+// close() is idempotent, so a test that already closes its own workspace stays correct.
+const workspaces: { close: () => Promise<void> }[] = [];
+afterEach(async () => {
+  await Promise.all(workspaces.splice(0).map((workspace) => workspace.close().catch(() => undefined)));
+  await Promise.all(folders.splice(0).map((folder) => rm(folder, { recursive: true, force: true })));
+});
+
+async function openWorkspace(
+  options: Parameters<typeof createStrictWorkspaceChanges>[0],
+): Promise<Awaited<ReturnType<typeof createStrictWorkspaceChanges>>> {
+  const created = await createStrictWorkspaceChanges(options);
+  if (created.ok) workspaces.push(created.workspace);
+  return created;
+}
 
 async function workspace(options: { git?: "clean" | "dirty" | "none"; limits?: StrictLimitOverrides } = {}): Promise<{ root: string; strict: StrictWorkspace }> {
   const root = await mkdtemp(join(tmpdir(), "countersign-strict-"));
@@ -29,7 +43,7 @@ async function workspace(options: { git?: "clean" | "dirty" | "none"; limits?: S
     git("commit", "-qm", "baseline");
     if (options.git === "dirty") await writeFile(join(root, "src.ts"), "export const value = 2;\n");
   }
-  const created = await createStrictWorkspaceChanges({ folder: root, limits: resolveStrictLimits(options.limits) });
+  const created = await openWorkspace({ folder: root, limits: resolveStrictLimits(options.limits) });
   if (!created.ok) throw new Error(`baseline failed: ${created.failure.message}`);
   return { root, strict: created.workspace };
 }
@@ -94,7 +108,7 @@ describe("Strict perimeter capture", () => {
     await writeFile(join(root, ".env"), "TOKEN=first\n");
     await mkdir(join(root, ".ssh"), { recursive: true });
     await writeFile(join(root, ".ssh", "id_rsa"), "PRIVATE\n");
-    const created = await createStrictWorkspaceChanges({ folder: root, limits: resolveStrictLimits() });
+    const created = await openWorkspace({ folder: root, limits: resolveStrictLimits() });
     expect(created.ok).toBe(true);
     if (!created.ok) return;
 
@@ -116,7 +130,7 @@ describe("Strict perimeter capture", () => {
     await writeFile(join(root, ".env"), "TOKEN=aaaa\n");
     const fixed = new Date("2026-10-20T08:00:00.000Z");
     await utimes(join(root, ".env"), fixed, fixed);
-    const created = await createStrictWorkspaceChanges({ folder: root, limits: resolveStrictLimits() });
+    const created = await openWorkspace({ folder: root, limits: resolveStrictLimits() });
     expect(created.ok).toBe(true);
     if (!created.ok) return;
 
@@ -132,7 +146,7 @@ describe("Strict perimeter capture", () => {
     expect(captured.snapshot.record.changedFileCount).toBe(1);
   });
 
-  it("marks a symlink, a binary file and an oversized new file as unreviewable", async () => {
+  it("marks a symlink and a binary file as unreviewable, and keeps a large new text file", async () => {
     const { root, strict } = await workspace();
     await writeFile(join(root, "picture.bin"), Buffer.from([0, 1, 2, 3, 0]));
     await writeFile(join(root, "huge.txt"), "x".repeat(17_000));
@@ -142,7 +156,8 @@ describe("Strict perimeter capture", () => {
     if (!captured.ok) return;
     const reasons = new Map(captured.snapshot.record.entries.map((entry) => [entry.path, entry.unreviewableReason]));
     expect(reasons.get("picture.bin")).toBe("binary_without_supported_review");
-    expect(reasons.get("huge.txt")).toBe("new_file_over_limit");
+    // Strict no longer refuses a new file on its size alone; readable text stays reviewable.
+    expect(reasons.get("huge.txt")).toBeUndefined();
     expect(captured.snapshot.changedUnsupportedPaths).toEqual([{ path: "link.ts", reason: "symlink" }]);
     expect(captured.snapshot.record.reviewable).toBe(false);
     expect(captured.snapshot.diff).not.toContain("picture.bin");
@@ -155,7 +170,7 @@ describe("Strict perimeter capture", () => {
     const fixed = new Date("2026-10-20T08:00:00.000Z");
     await writeFile(big, `${"a".repeat(1024 * 1024)}x`);
     await utimes(big, fixed, fixed);
-    const created = await createStrictWorkspaceChanges({ folder: root, limits: resolveStrictLimits() });
+    const created = await openWorkspace({ folder: root, limits: resolveStrictLimits() });
     expect(created.ok).toBe(true);
     if (!created.ok) return;
     expect((await created.workspace.capture()).ok).toBe(true);
@@ -199,7 +214,7 @@ describe("Strict perimeter capture", () => {
     const fixed = new Date("2026-10-20T08:00:00.000Z");
     await symlink(join(root, "aaa.txt"), link);
     await utimes(root, fixed, fixed);
-    const created = await createStrictWorkspaceChanges({ folder: root, limits: resolveStrictLimits() });
+    const created = await openWorkspace({ folder: root, limits: resolveStrictLimits() });
     expect(created.ok).toBe(true);
     if (!created.ok) return;
     const before = await created.workspace.capture();
@@ -223,7 +238,7 @@ describe("Strict perimeter capture", () => {
     folders.push(root);
     await mkdir(join(root, "pkg"), { recursive: true });
     await writeFile(join(root, "pkg", "a.ts"), "export const a = 1;\n");
-    const created = await createStrictWorkspaceChanges({ folder: root, limits: resolveStrictLimits() });
+    const created = await openWorkspace({ folder: root, limits: resolveStrictLimits() });
     expect(created.ok).toBe(true);
     if (!created.ok) return;
 
@@ -247,7 +262,7 @@ describe("Strict perimeter capture", () => {
       await writeFile(join(root, `blob-${index}.bin`), Buffer.alloc(4 * 1024 * 1024, index));
     }
     await writeFile(join(root, "src.ts"), "export const value = 1;\n");
-    const created = await createStrictWorkspaceChanges({ folder: root, limits: resolveStrictLimits() });
+    const created = await openWorkspace({ folder: root, limits: resolveStrictLimits() });
 
     expect(created.ok).toBe(true);
     if (!created.ok) return;
@@ -285,7 +300,7 @@ describe("Strict perimeter capture", () => {
       await writeFile(join(root, `file-${index}.ts`), `export const value${index} = ${"x".repeat(200)};\n`);
     }
     // A pool far smaller than the text in the perimeter: some files cannot be kept.
-    const created = await createStrictWorkspaceChanges({
+    const created = await openWorkspace({
       folder: root, limits: resolveStrictLimits(), contentBudgetBytes: 400,
     });
 
@@ -310,7 +325,7 @@ describe("Strict perimeter capture", () => {
     folders.push(root);
     await writeFile(join(root, "src.ts"), "export const value = 1;\n");
     // A pool of zero keeps nothing at all, which is the exhausted state made deterministic.
-    const created = await createStrictWorkspaceChanges({
+    const created = await openWorkspace({
       folder: root, limits: resolveStrictLimits(), contentBudgetBytes: 0,
     });
 
@@ -341,7 +356,7 @@ describe("Strict perimeter capture", () => {
     folders.push(root);
     await writeFile(join(root, "big.txt"), "a".repeat(1024 * 1024 + 1));
     await writeFile(join(root, "small.txt"), "a\n");
-    const created = await createStrictWorkspaceChanges({
+    const created = await openWorkspace({
       folder: root, limits: resolveStrictLimits(), contentBudgetBytes: 0,
     });
 
@@ -363,24 +378,26 @@ describe("Strict perimeter capture", () => {
     }
   });
 
-  it("stops building patches at the diff byte limit before processing later files", async () => {
+  it("names the file a patch cannot be built for instead of blaming the workspace", async () => {
     const root = await mkdtemp(join(tmpdir(), "countersign-strict-"));
     folders.push(root);
     await writeFile(join(root, "a.txt"), `${"a".repeat(150_000)}\n`);
     await writeFile(join(root, "z.txt"), Array.from({ length: 1_100 }, (_, i) => `old-${i}`).join("\n"));
-    const created = await createStrictWorkspaceChanges({ folder: root, limits: resolveStrictLimits() });
+    const created = await openWorkspace({ folder: root, limits: resolveStrictLimits() });
     expect(created.ok).toBe(true);
     if (!created.ok) return;
     try {
       await writeFile(join(root, "a.txt"), `${"b".repeat(150_000)}\n`);
-      // Diffing this file would fail on its edit-distance limit. The earlier file must
-      // trigger the byte limit first, without building an unnecessary second patch.
+      // Diffing this file fails on its edit-distance limit. That is an unreviewable
+      // change with a file name and a next step, not an unreadable perimeter.
       await writeFile(join(root, "z.txt"), Array.from({ length: 1_100 }, (_, i) => `new-${i}`).join("\n"));
       const captured = await created.workspace.capture();
       expect(captured.ok).toBe(false);
       if (captured.ok) return;
-      expect(captured.failure.code).toBe("limit_reached");
-      expect(captured.failure.limit?.limit).toBe("scan.maxDiffBytes");
+      expect(captured.failure.code).toBe("unreviewable_change");
+      expect(captured.failure.message).toContain("z.txt");
+      expect(captured.failure.message).toContain("too many line edits");
+      expect(captured.failure.message).not.toContain("perimeter could not be compared");
     } finally {
       await created.workspace.close();
     }
@@ -397,7 +414,7 @@ describe("Strict perimeter capture", () => {
     for (let index = 0; index < 400; index++) {
       await writeFile(join(root, "pkg", `file-${index}.ts`), `export const value${index} = ${index};\n`);
     }
-    const created = await createStrictWorkspaceChanges({ folder: root, limits: resolveStrictLimits() });
+    const created = await openWorkspace({ folder: root, limits: resolveStrictLimits() });
     expect(created.ok).toBe(true);
     if (!created.ok) return;
 
@@ -433,7 +450,7 @@ describe("Strict perimeter capture", () => {
     folders.push(root);
     const target = join(root, "big.bin");
     await writeFile(target, Buffer.alloc(24 * 1024 * 1024, 1));
-    const created = await createStrictWorkspaceChanges({ folder: root, limits: resolveStrictLimits() });
+    const created = await openWorkspace({ folder: root, limits: resolveStrictLimits() });
     expect(created.ok).toBe(true);
     if (!created.ok) return;
 
@@ -485,7 +502,7 @@ describe("Strict perimeter capture", () => {
           swaps += 1;
         } catch { /* Losing the race is fine; the assertion is about what was recorded. */ }
       })));
-    const created = await createStrictWorkspaceChanges({ folder, limits: resolveStrictLimits() });
+    const created = await openWorkspace({ folder, limits: resolveStrictLimits() });
     await interference;
     expect(swaps).toBeGreaterThan(0);
 
@@ -524,7 +541,7 @@ describe("Strict perimeter capture", () => {
           swaps += 1;
         } catch { /* Losing the race is fine; the assertion is about what was recorded. */ }
       })));
-    const created = await createStrictWorkspaceChanges({ folder: root, limits: resolveStrictLimits() });
+    const created = await openWorkspace({ folder: root, limits: resolveStrictLimits() });
     await interference;
     expect(swaps).toBeGreaterThan(0);
 
@@ -542,7 +559,7 @@ describe("Strict perimeter capture", () => {
     const root = await mkdtemp(join(tmpdir(), "countersign-strict-"));
     folders.push(root);
     await writeFile(join(root, "src.ts"), "export const value = 1;\n");
-    const created = await createStrictWorkspaceChanges({ folder: root, limits: resolveStrictLimits() });
+    const created = await openWorkspace({ folder: root, limits: resolveStrictLimits() });
     expect(created.ok).toBe(true);
     if (!created.ok) return;
 
@@ -577,7 +594,7 @@ describe("Strict perimeter capture", () => {
     folders.push(root);
     await writeFile(join(root, "src.ts"), "export const value = 1;\n");
     execFileSync("mkfifo", [join(root, "pipe")]);
-    const created = await createStrictWorkspaceChanges({ folder: root, limits: resolveStrictLimits() });
+    const created = await openWorkspace({ folder: root, limits: resolveStrictLimits() });
     expect(created.ok).toBe(true);
     if (!created.ok) return;
     const captured = await created.workspace.capture();
@@ -640,7 +657,7 @@ describe("the pinned root descriptor", () => {
 
     const { signal, processesStarted } = signalThatCancelsDuringGit();
     const before = openDescriptors();
-    const created = await createStrictWorkspaceChanges({ folder: root, limits: resolveStrictLimits(), signal });
+    const created = await openWorkspace({ folder: root, limits: resolveStrictLimits(), signal });
 
     expect(created.ok).toBe(false);
     if (created.ok) return;
@@ -655,7 +672,7 @@ describe("the pinned root descriptor", () => {
     folders.push(root);
     await writeFile(join(root, "src.ts"), "export const value = 1;\n");
     const before = openDescriptors();
-    const created = await createStrictWorkspaceChanges({ folder: root, limits: resolveStrictLimits() });
+    const created = await openWorkspace({ folder: root, limits: resolveStrictLimits() });
     expect(created.ok).toBe(true);
     if (!created.ok) return;
     expect(openDescriptors()).toBe(before + 1);
@@ -667,7 +684,7 @@ describe("the pinned root descriptor", () => {
     const root = await mkdtemp(join(tmpdir(), "countersign-strict-"));
     folders.push(root);
     await writeFile(join(root, "src.ts"), "export const value = 1;\n");
-    const created = await createStrictWorkspaceChanges({ folder: root, limits: resolveStrictLimits() });
+    const created = await openWorkspace({ folder: root, limits: resolveStrictLimits() });
     expect(created.ok).toBe(true);
     if (!created.ok) return;
     await created.workspace.close();
@@ -695,7 +712,7 @@ describe("the pinned root descriptor", () => {
     execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@e.invalid", "commit", "-qm", "baseline"], { cwd: root });
     execFileSync("git", ["init", "-q"], { cwd: decoy });
 
-    const created = await createStrictWorkspaceChanges({ folder: root, limits: resolveStrictLimits() });
+    const created = await openWorkspace({ folder: root, limits: resolveStrictLimits() });
     expect(created.ok).toBe(true);
     if (!created.ok) return;
 
@@ -725,7 +742,7 @@ describe("credential-shaped paths in Strict", () => {
     await writeFile(join(root, ".env"), "TOKEN=first\n");
     await mkdir(join(root, ".ssh"), { recursive: true });
     await writeFile(join(root, ".ssh", "id_rsa"), "PRIVATE-ONE\n");
-    const created = await createStrictWorkspaceChanges({ folder: root, limits: resolveStrictLimits() });
+    const created = await openWorkspace({ folder: root, limits: resolveStrictLimits() });
     expect(created.ok).toBe(true);
     if (!created.ok) return;
     expect((await created.workspace.capture()).ok).toBe(true);
