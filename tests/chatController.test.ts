@@ -10,13 +10,15 @@ import { StrictWorkflowResult } from "../src/shared/strict";
 
 let root = "";
 let activeFile = "";
+let configuredCavemanStyle: unknown = "auto";
 
 vi.mock("vscode", () => ({
   commands: { executeCommand: () => Promise.resolve(undefined), registerCommand: () => ({ dispose: () => undefined }) },
   workspace: {
     get isTrusted() { return true; },
     get workspaceFolders() { return [{ uri: { fsPath: root } }]; },
-    getConfiguration: () => ({ get: (_key: string, fallback: unknown) => fallback }),
+    getConfiguration: () => ({ get: (key: string, fallback: unknown) =>
+      key === "cavemanStyle" ? configuredCavemanStyle : fallback }),
   },
   window: {
     get activeTextEditor() { return { document: {
@@ -34,7 +36,12 @@ vi.mock("../src/chat/codexAdapter", () => ({
   inspectCodexAccount: async () => undefined,
 }));
 
-afterEach(async () => { if (root) await rm(root, { recursive: true, force: true }); root = ""; activeFile = ""; });
+afterEach(async () => {
+  if (root) await rm(root, { recursive: true, force: true });
+  root = "";
+  activeFile = "";
+  configuredCavemanStyle = "auto";
+});
 
 describe("sidebar task routing", () => {
   it("sends a referenced file to Balanced even when a legacy single-provider mode is requested", async () => {
@@ -62,6 +69,34 @@ describe("sidebar task routing", () => {
     expect(request?.providers).toEqual({ provider: "claude", codexProvider: "real" });
     expect(request?.task).toContain("Review this change\n\nReferenced workspace file: sample.ts\nSelected text:\nselected line");
     expect(request?.executionPermission).toBe("askBeforeChange");
+    controller.dispose();
+  });
+
+  it("takes the Caveman style from the setting until the sidebar chooses one", async () => {
+    root = await mkdtemp(join(tmpdir(), "countersign-chat-caveman-"));
+    configuredCavemanStyle = "always";
+    const data = new Map<string, unknown>();
+    let request: WorkflowStartRequest | undefined;
+    const controller = new ChatController({
+      extensionUri: {} as vscode.Uri,
+      workspaceState: { get: (key: string) => data.get(key), update: async (key: string, value: unknown) => { data.set(key, value); } },
+    } as unknown as vscode.ExtensionContext, {
+      start: async (input) => { request = input; throw new Error("test stop before provider startup"); },
+      cancel: () => undefined,
+    });
+    const actions = controller as unknown as { send: (input: Record<string, unknown>) => Promise<void> };
+    const turn = { text: "Do the thing", mode: "balanced", executionPermission: "askBeforeChange",
+      selection: { claudeModel: "", claudeEffort: "", codexModel: "", codexEffort: "" } };
+
+    // Nothing stored for this workspace: countersign.cavemanStyle decides.
+    await actions.send({ ...turn });
+    expect(request?.cavemanStyle).toBe("always");
+
+    // The sidebar overrides it, and the choice outlives the turn that made it.
+    await actions.send({ ...turn, cavemanStyle: "internalOnly" });
+    expect(request?.cavemanStyle).toBe("internalOnly");
+    await actions.send({ ...turn });
+    expect(request?.cavemanStyle).toBe("internalOnly");
     controller.dispose();
   });
 

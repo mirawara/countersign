@@ -120,7 +120,8 @@ export class ExtensionRuntime {
     const repository = folders[0].uri.fsPath;
     const accounts = await resolveAccountSelection(request.accounts);
     let config = validateConfiguration({ ...readConfiguration(), provider: "claude", codexProvider: "real",
-      ...request.selection, executionPermission: request.executionPermission });
+      ...request.selection, executionPermission: request.executionPermission,
+      ...(request.cavemanStyle ? { cavemanStyle: request.cavemanStyle } : {}) });
     const controller = new AbortController();
     this.activeController = controller;
     const onAbort = (): void => controller.abort();
@@ -266,7 +267,8 @@ export class ExtensionRuntime {
       let config;
       try {
         config = validateConfiguration({ ...readConfiguration(), ...request?.providers, ...request?.selection,
-          ...(request?.executionPermission ? { executionPermission: request.executionPermission } : {}) });
+          ...(request?.executionPermission ? { executionPermission: request.executionPermission } : {}),
+          ...(request?.cavemanStyle ? { cavemanStyle: request.cavemanStyle } : {}) });
       } catch (error) {
         this.currentState = "failed";
         this.lastStartIssue = errorMessage(error);
@@ -448,7 +450,8 @@ export class ExtensionRuntime {
       let currentConfig;
       try {
         currentConfig = validateConfiguration({ ...readConfiguration(), ...request?.providers, ...request?.selection,
-          ...(request?.executionPermission ? { executionPermission: request.executionPermission } : {}) });
+          ...(request?.executionPermission ? { executionPermission: request.executionPermission } : {}),
+          ...(request?.cavemanStyle ? { cavemanStyle: request.cavemanStyle } : {}) });
       } catch (error) {
         this.currentState = "failed";
         this.lastStartIssue = errorMessage(error);
@@ -780,6 +783,7 @@ function readConfiguration(): Record<string, unknown> {
     codexExecutable: config.get<unknown>("codexExecutable", "codex"),
     mockScenario: internalTestMode ? config.get<unknown>("mockScenario", "clean") : "clean",
     executionPermission: config.get<unknown>("executionPermission", "askBeforeChange"),
+    cavemanStyle: config.get<unknown>("cavemanStyle", "auto"),
     claudeAllowedTools: config.get<unknown>("claudeAllowedTools", ["Read", "Glob", "Grep", "Edit", "Write"]),
     localChecks: config.get<unknown>("localChecks", []),
     taskTimeoutMinutes: config.get<unknown>("taskTimeoutMinutes", 30),

@@ -14,7 +14,7 @@ import { AccountProfiles, AccountProvider } from "./accountProfiles";
 import { BalancedWorkflowResult, WorkflowEvent } from "../shared/types";
 import { detailedWorkflowReport } from "../orchestrator/report";
 import { isRepositoryLocked, onRepositoryLockChange } from "../shared/repositoryLock";
-import { ExecutionPermission, WorkflowModelSelection, WorkflowProviderSelection } from "../configuration/config";
+import { CavemanStyle, ExecutionPermission, WorkflowModelSelection, WorkflowProviderSelection } from "../configuration/config";
 import {
   StrictPlanApprovalAnswer, StrictPlanPromptData, StrictWorkflowStartRequest, WorkflowStartRequest,
   WorkflowAccountSelection,
@@ -43,6 +43,7 @@ type WorkflowPromptAnswer = string | boolean | StrictPlanApprovalAnswer | "resum
 interface TurnSettings {
   mode: "balanced" | "strict";
   executionPermission: ExecutionPermission;
+  cavemanStyle: CavemanStyle;
   selection: WorkflowModelSelection;
 }
 
@@ -87,7 +88,7 @@ export class ChatController implements vscode.Disposable {
     this.accounts = new AccountProfiles(context.globalState ?? context.workspaceState);
     const storedTurnSettings = context.workspaceState.get<unknown>(TURN_SETTINGS_KEY);
     this.turnSettingsStored = storedTurnSettings !== undefined;
-    this.turnSettings = restoreTurnSettings(storedTurnSettings);
+    this.turnSettings = restoreTurnSettings(storedTurnSettings, configuredCavemanStyle());
     this.view = new ChatView(context.extensionUri, (message) => { void this.onMessage(message); }, () => this.postState());
     if (process.env.COUNTERSIGN_TEST_MODE === "1") {
       this.capabilities.set("mock", { provider: "mock", available: true, accountLabel: "Test provider",
@@ -430,6 +431,12 @@ export class ChatController implements vscode.Disposable {
       this.postState();
       return;
     }
+    const cavemanStyle = raw.cavemanStyle ?? this.turnSettings.cavemanStyle;
+    if (cavemanStyle !== "auto" && cavemanStyle !== "always" && cavemanStyle !== "internalOnly") {
+      this.notice = "Choose a Caveman style for the turn.";
+      this.postState();
+      return;
+    }
     if (raw.selection !== undefined) {
       if (!isRecord(raw.selection) || !["claudeModel", "claudeEffort", "codexModel", "codexEffort"]
         .every((key) => typeof raw.selection === "object" &&
@@ -454,7 +461,8 @@ export class ChatController implements vscode.Disposable {
       this.postState();
       return;
     }
-    await this.saveTurnSettings({ mode, executionPermission, selection: selection ?? this.turnSettings.selection });
+    await this.saveTurnSettings({ mode, executionPermission, cavemanStyle,
+      selection: selection ?? this.turnSettings.selection });
     const controller = new AbortController();
     this.activeController = controller;
     this.liveTask = { label: `Starting ${mode === "strict" ? "Strict" : "Balanced"} task`, since: Date.now() };
@@ -644,6 +652,7 @@ export class ChatController implements vscode.Disposable {
         selection,
         accounts,
         executionPermission,
+        cavemanStyle: this.turnSettings.cavemanStyle,
         interaction: {
           askQuestion: (phase: "planning" | "implementing" | "reviewing" | "correcting", question: string,
             requestSignal: AbortSignal) => this.askWorkflowQuestion(threadId, phase, question, requestSignal),
@@ -705,6 +714,7 @@ export class ChatController implements vscode.Disposable {
         selection,
         accounts,
         executionPermission,
+        cavemanStyle: this.turnSettings.cavemanStyle,
         signal,
         onEvent: (event) => {
           this.setLiveTask(`Strict phase ${event.phase === "plan" ? "A" : "B"} · ${event.state.replace(/_/g, " ")}`);
@@ -1004,10 +1014,11 @@ export class ChatController implements vscode.Disposable {
   }
 
   private saveTurnSettings(raw: unknown): Promise<void> {
-    const next = restoreTurnSettings(raw);
+    const next = restoreTurnSettings(raw, this.turnSettings.cavemanStyle);
     if (!isRecord(raw) || !isRecord(raw.selection) ||
         !["balanced", "strict"].includes(String(raw.mode)) ||
-        !["askBeforeChange", "fullAccess"].includes(String(raw.executionPermission))) {
+        !["askBeforeChange", "fullAccess"].includes(String(raw.executionPermission)) ||
+        !["auto", "always", "internalOnly"].includes(String(raw.cavemanStyle))) {
       throw new Error("Turn settings are invalid.");
     }
     this.turnSettings = next;
@@ -1072,7 +1083,13 @@ export class ChatController implements vscode.Disposable {
   }
 }
 
-function restoreTurnSettings(raw: unknown): TurnSettings {
+/** The sidebar overrides countersign.cavemanStyle, which is the default until it does. */
+function configuredCavemanStyle(): CavemanStyle {
+  const value = vscode.workspace.getConfiguration("countersign").get<unknown>("cavemanStyle", "auto");
+  return value === "always" || value === "internalOnly" ? value : "auto";
+}
+
+function restoreTurnSettings(raw: unknown, cavemanDefault: CavemanStyle): TurnSettings {
   const selection = isRecord(raw) && isRecord(raw.selection) ? raw.selection : {};
   const value = (key: keyof WorkflowModelSelection): string => {
     const candidate = selection[key];
@@ -1081,6 +1098,8 @@ function restoreTurnSettings(raw: unknown): TurnSettings {
   return {
     mode: isRecord(raw) && raw.mode === "strict" ? "strict" : "balanced",
     executionPermission: isRecord(raw) && raw.executionPermission === "fullAccess" ? "fullAccess" : "askBeforeChange",
+    cavemanStyle: isRecord(raw) && (raw.cavemanStyle === "always" || raw.cavemanStyle === "internalOnly"
+      || raw.cavemanStyle === "auto") ? raw.cavemanStyle : cavemanDefault,
     selection: { claudeModel: value("claudeModel"), claudeEffort: value("claudeEffort"),
       codexModel: value("codexModel"), codexEffort: value("codexEffort") },
   };

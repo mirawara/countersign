@@ -173,6 +173,28 @@ describe("Balanced sidebar controls", () => {
     expect(get("selection-notice").textContent).toContain("opus[1m]");
   });
 
+  it("carries the Caveman style with the turn, seeded from the extension's own default", () => {
+    const { get, posted, receive } = sidebar();
+    // Nothing stored for this workspace yet, so the panel shows what a turn would use.
+    receive({ capabilities: [], turnSettingsStored: false, turnSettings: {
+      mode: "balanced", executionPermission: "askBeforeChange", cavemanStyle: "always", selection: {} } });
+    expect(get("caveman-style").value).toBe("always");
+
+    get("caveman-style").value = "internalOnly";
+    get("caveman-style").dispatch("change");
+    expect(posted.at(-1)).toMatchObject({ type: "turnSettings", settings: { cavemanStyle: "internalOnly" } });
+
+    get("prompt").value = "Do the thing";
+    get("send").dispatch("click");
+    // The style belongs to this task, like the mode and the permission beside it.
+    expect(posted.at(-1)).toMatchObject({ type: "send", cavemanStyle: "internalOnly" });
+
+    // A stored value does not overwrite the choice just made here; a reload reads it again.
+    receive({ capabilities: [], turnSettingsStored: true, turnSettings: {
+      mode: "balanced", executionPermission: "askBeforeChange", cavemanStyle: "auto", selection: {} } });
+    expect(get("caveman-style").value).toBe("internalOnly");
+  });
+
   it("collects plan approval and clarification answers inside the sidebar", () => {
     const elements = new Map<string, Element>();
     const get = (id: string): Element => {

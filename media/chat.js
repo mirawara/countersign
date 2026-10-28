@@ -8,6 +8,7 @@
     "claude-account", "claude-email", "claude-usage", "add-claude-account", "login-claude-account", "remove-claude-account",
     "codex-account", "codex-email", "codex-usage", "add-codex-account", "login-codex-account", "remove-codex-account",
     "balanced-claude-model", "balanced-claude-effort", "balanced-codex-model", "balanced-codex-effort", "execution-permission",
+    "caveman-style",
     "settings-digest", "selection-notice", "notice", "messages", "empty", "approval", "approval-summary", "approval-detail", "approve", "deny", "cancel-approval",
     "workflow-prompt", "workflow-title", "workflow-detail", "workflow-answer-label", "workflow-answer", "workflow-submit", "workflow-cancel",
     "workflow-secondary", "strict-controls", "strict-permission", "strict-hint",
@@ -36,9 +37,13 @@
   const savedUi = api.getState?.() || null;
   const balancedSelection = { claudeModel: "", claudeEffort: "", codexModel: "", codexEffort: "" };
 
+  const CAVEMAN_STYLES = ["auto", "always", "internalOnly"];
+  const cavemanStyle = (value) => CAVEMAN_STYLES.includes(value) ? value : "auto";
+
   function turnSettings() {
     return { mode: dom.mode.value === "strict" ? "strict" : "balanced",
       executionPermission: dom.executionPermission.value === "fullAccess" ? "fullAccess" : "askBeforeChange",
+      cavemanStyle: cavemanStyle(dom.cavemanStyle.value),
       selection: { ...balancedSelection } };
   }
   function persistUi() {
@@ -55,6 +60,7 @@
     if (!raw || typeof raw !== "object") return;
     dom.mode.value = raw.mode === "strict" ? "strict" : "balanced";
     dom.executionPermission.value = raw.executionPermission === "fullAccess" ? "fullAccess" : "askBeforeChange";
+    dom.cavemanStyle.value = cavemanStyle(raw.cavemanStyle);
     for (const key of Object.keys(balancedSelection)) {
       const value = raw.selection?.[key];
       balancedSelection[key] = typeof value === "string" && value.length <= 100 && !/\s/.test(value) ? value : "";
@@ -596,6 +602,9 @@
           applyTurnSettings(savedUi.turnSettings);
           post({ type: "turnSettings", settings: turnSettings() });
         }
+        // Nothing stored for this workspace yet: show the defaults the extension would
+        // use, so a setting chosen in VS Code is what the panel reports.
+        else if (!preferencesLoaded) applyTurnSettings(message.turnSettings);
         preferencesLoaded = true;
         persistUi();
       }
@@ -650,6 +659,7 @@
     });
   }
   dom.executionPermission.addEventListener("change", () => { renderSettingsDigest(); persistTurnSettings(); });
+  dom.cavemanStyle.addEventListener("change", () => persistTurnSettings());
   dom.settingsToggle.addEventListener("click", () => setSettingsOpen(!settingsOpen));
   dom.settingsClose.addEventListener("click", () => setSettingsOpen(false));
   dom.settingsScrim.addEventListener("click", () => setSettingsOpen(false));
@@ -676,7 +686,8 @@
       mode: dom.mode.value === "strict" ? "strict" : "balanced",
       accounts: { claude: dom.claudeAccount.value, codex: dom.codexAccount.value },
       selection: { ...balancedSelection },
-      executionPermission: dom.executionPermission.value });
+      executionPermission: dom.executionPermission.value,
+      cavemanStyle: cavemanStyle(dom.cavemanStyle.value) });
   });
   dom.prompt.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); dom.send.click(); }

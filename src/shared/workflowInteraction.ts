@@ -1,4 +1,4 @@
-import { ExecutionPermission, WorkflowModelSelection, WorkflowProviderSelection } from "../configuration/config";
+import { CavemanStyle, ExecutionPermission, WorkflowModelSelection, WorkflowProviderSelection } from "../configuration/config";
 import { WorkflowEvent } from "./types";
 import { StrictConsensus, StrictHumanApproval, StrictPlan } from "./strict";
 
@@ -29,6 +29,8 @@ export interface WorkflowStartRequest {
   providers?: WorkflowProviderSelection;
   selection?: WorkflowModelSelection;
   executionPermission?: ExecutionPermission;
+  /** The sidebar's per-turn override of countersign.cavemanStyle. */
+  cavemanStyle?: CavemanStyle;
   interaction: {
     askQuestion: (phase: "planning" | "implementing" | "reviewing" | "correcting",
       question: string, signal: AbortSignal) => Promise<string | undefined>;
@@ -60,6 +62,8 @@ export interface StrictWorkflowStartRequest {
   accounts?: WorkflowAccountSelection;
   selection?: WorkflowModelSelection;
   executionPermission: ExecutionPermission;
+  /** The sidebar's per-turn override of countersign.cavemanStyle. */
+  cavemanStyle?: CavemanStyle;
   /** The chat turn's cancellation signal, propagated through Strict preflight and provider probes. */
   signal: AbortSignal;
   onEvent?: (event: import("./types").StrictWorkflowEvent) => void;

@@ -173,6 +173,9 @@ ${icon.sliders}<span id="settings-digest" class="digest"></span><span id="settin
 <label class="wide">After plan approval<span class="select"><select id="execution-permission">
 <option value="askBeforeChange">Ask before change</option><option value="fullAccess">Full access</option>
 </select></span></label>
+<label class="wide">Caveman style<span class="select"><select id="caveman-style">
+<option value="auto">Auto — follow the CLI profile</option><option value="always">Always — terse answers too</option><option value="internalOnly">Internal only — answers in full prose</option>
+</select></span></label>
 <p id="selection-notice" class="selection-notice hidden" role="status" aria-live="polite"></p>
 <div class="account-line"><span id="account">Account: unavailable</span>
 <button id="refresh" class="icon" title="Refresh providers" aria-label="Refresh providers">${icon.refresh}</button></div>
