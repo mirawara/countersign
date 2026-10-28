@@ -19,6 +19,13 @@ import {
   parseStrictImplementationResponse, parseStrictReviewResponse, StrictReportedFinding,
 } from "./strictResponses";
 
+/**
+ * How many times a round of checks may move the perimeter before Strict calls the checks
+ * themselves the problem. This is a liveness guard, not a budget: no configurable ceiling
+ * bounds this loop, so without it a check that writes a changing value never settles.
+ */
+const MAX_CHECK_STABILISATION_ROUNDS = 5;
+
 export interface StrictPauseInfo {
   reason: "stall";
   fromState: StrictWorkflowState;
@@ -429,6 +436,16 @@ export async function runStrictImplementationPhase(
           throw new StrictPhaseFailure("consensus_not_reached", {
             code: "checks_failed",
             message: "Configured checks returned to a previously checked digest without stabilizing.",
+            nextAction: "Make the checks leave the reviewed files unchanged, then resume in a new task.",
+          });
+        }
+        // A check that stamps a counter or a timestamp into the perimeter reaches a new
+        // digest every time, so the repeated-digest guard above never fires. Without a
+        // count the round would repeat for as long as the task is left running.
+        if (checkedDigests.size >= MAX_CHECK_STABILISATION_ROUNDS) {
+          throw new StrictPhaseFailure("consensus_not_reached", {
+            code: "checks_failed",
+            message: `Configured checks changed the reviewed files on ${MAX_CHECK_STABILISATION_ROUNDS} consecutive rounds, reaching a different digest each time.`,
             nextAction: "Make the checks leave the reviewed files unchanged, then resume in a new task.",
           });
         }

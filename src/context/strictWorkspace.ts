@@ -12,6 +12,7 @@ import { ProcessFailure } from "../shared/process";
 import { readStrictGit, readStrictGitBaselineFile, StrictGitReading } from "./strictGit";
 import { classifyStrictDirectory, classifyStrictPath } from "./pathPolicy";
 import { buildFilePatch } from "./workspaceChanges";
+import { GitChangeError } from "./gitChanges";
 
 /**
  * The Strict perimeter capture. Unlike Balanced it never takes a Git fast path and never
@@ -612,8 +613,14 @@ function compareStrict(
     if (reason === "binary_without_supported_review") entry.kind = "binary";
     entries.push(entry);
     if (reason !== undefined) continue;
-    const patch = buildFilePatch(path, old?.content, current?.content);
-    patches.push(patch);
+    // A file the patch builder refuses is an unreviewable change, not an unreadable
+    // perimeter: say which file and why, instead of blaming the workspace.
+    try {
+      patches.push(buildFilePatch(path, old?.content, current?.content));
+    } catch (error) {
+      if (!(error instanceof GitChangeError)) throw error;
+      throw new StrictScanError({ code: "unreviewable_change", message: error.message });
+    }
   }
 
   const diff = patches.join("\n");
